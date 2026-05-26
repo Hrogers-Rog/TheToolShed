@@ -34,13 +34,41 @@ namespace Toolshed.ServiceFacilities
 
 		private AnimationClip _clip;
 		private float _nextRefreshTime;
+		private float _nextBindingRefreshTime;
 		private GameObject _resolvedSampleRoot;
 		private Transform _fallbackTransform;
 		private bool _hasLastNormalized;
 		private float _lastNormalized;
 
+		private const float BindingRefreshIntervalSeconds = 0.5f;
+
 		private void OnEnable()
 		{
+			ResolveClip();
+			SampleStorage();
+		}
+
+		public void RefreshBinding(AnimationMap map, GameObject root, Industry industry, Load storageLoad)
+		{
+			if (animationMap == map && sampleRoot == root && sourceIndustry == industry && load == storageLoad)
+			{
+				if (_clip == null)
+				{
+					ResolveClip();
+					SampleStorage();
+				}
+				return;
+			}
+
+			animationMap = map;
+			sampleRoot = root;
+			sourceIndustry = industry;
+			load = storageLoad;
+			_clip = null;
+			_resolvedSampleRoot = null;
+			_fallbackTransform = null;
+			_hasLastNormalized = false;
+			_nextBindingRefreshTime = 0f;
 			ResolveClip();
 			SampleStorage();
 		}
@@ -52,8 +80,69 @@ namespace Toolshed.ServiceFacilities
 				return;
 			}
 			_nextRefreshTime = Time.unscaledTime + RefreshIntervalSeconds;
+			RefreshStaleBindingIfNeeded();
 			ResolveClip();
 			SampleStorage();
+		}
+
+		private void LateUpdate()
+		{
+			if (!useTransformFallback)
+			{
+				return;
+			}
+
+			// Storage props can be reset when scenery children are streamed back in.
+			// Re-applying the storage pose late keeps visual fill level tied to inventory.
+			RefreshStaleBindingIfNeeded();
+			SampleStorage();
+		}
+
+		private void RefreshStaleBindingIfNeeded()
+		{
+			if (Time.unscaledTime < _nextBindingRefreshTime)
+			{
+				return;
+			}
+			_nextBindingRefreshTime = Time.unscaledTime + BindingRefreshIntervalSeconds;
+
+			if (sampleRoot == null)
+			{
+				return;
+			}
+
+			bool mapStale = animationMap == null || !IsChildOf(animationMap.transform, sampleRoot.transform);
+			bool sampleStale = _resolvedSampleRoot != null && !IsChildOf(_resolvedSampleRoot.transform, sampleRoot.transform);
+			if (mapStale || sampleStale)
+			{
+				AnimationMap replacement = FindAnimationMapUnder(sampleRoot);
+				if (replacement != animationMap)
+				{
+					if (debugLogging)
+					{
+						Main.Log("[ServiceFacility][Loader] storage animation binding refreshed mapKey=" + animationMapKey +
+							", oldMap=" + (animationMap != null ? animationMap.name : "<null>") +
+							", newMap=" + (replacement != null ? replacement.name : "<null>") +
+							", root=" + sampleRoot.name);
+					}
+					RefreshBinding(replacement, sampleRoot, sourceIndustry, load);
+					return;
+				}
+
+				_resolvedSampleRoot = null;
+				_clip = null;
+			}
+
+			if (_fallbackTransform != null && !IsChildOf(_fallbackTransform, sampleRoot.transform))
+			{
+				if (debugLogging)
+				{
+					Main.Log("[ServiceFacility][Loader] storage transform fallback stale mapKey=" + animationMapKey +
+						", transform=" + _fallbackTransform.name +
+						", root=" + sampleRoot.name);
+				}
+				_fallbackTransform = null;
+			}
 		}
 
 		private void ResolveClip()
@@ -83,7 +172,7 @@ namespace Toolshed.ServiceFacilities
 
 		private void SampleStorage()
 		{
-			if (_clip == null || animationMap == null || sourceIndustry == null || load == null)
+			if (sourceIndustry == null || load == null)
 			{
 				return;
 			}
@@ -138,12 +227,20 @@ namespace Toolshed.ServiceFacilities
 			{
 				return _resolvedSampleRoot;
 			}
-			return sampleRoot != null ? sampleRoot : animationMap.gameObject;
+			if (sampleRoot != null)
+			{
+				return sampleRoot;
+			}
+			if (animationMap != null)
+			{
+				return animationMap.gameObject;
+			}
+			return gameObject;
 		}
 
 		private GameObject ResolveSampleRoot()
 		{
-			GameObject best = sampleRoot != null ? sampleRoot : animationMap.gameObject;
+			GameObject best = sampleRoot != null ? sampleRoot : (animationMap != null ? animationMap.gameObject : gameObject);
 			int bestChangedCount = -1;
 			List<GameObject> candidates = BuildSampleRootCandidates();
 			for (int i = 0; i < candidates.Count; i++)
@@ -189,7 +286,12 @@ namespace Toolshed.ServiceFacilities
 		{
 			if (_fallbackTransform != null)
 			{
-				return _fallbackTransform;
+				GameObject root = sampleRoot != null ? sampleRoot : SampleRoot();
+				if (root == null || IsChildOf(_fallbackTransform, root.transform))
+				{
+					return _fallbackTransform;
+				}
+				_fallbackTransform = null;
 			}
 			if (string.IsNullOrWhiteSpace(fallbackTransformName))
 			{
@@ -300,6 +402,68 @@ namespace Toolshed.ServiceFacilities
 				transform.localScale = scales[i];
 			}
 			return changed;
+		}
+
+		private AnimationMap FindAnimationMapUnder(GameObject root)
+		{
+			if (root == null)
+			{
+				return null;
+			}
+
+			AnimationMap[] maps = root.GetComponentsInChildren<AnimationMap>(true);
+			if (maps == null || maps.Length == 0)
+			{
+				return null;
+			}
+
+			for (int i = 0; i < maps.Length; i++)
+			{
+				AnimationMap map = maps[i];
+				if (MapHasRequestedClip(map))
+				{
+					return map;
+				}
+			}
+			return maps[0];
+		}
+
+		private bool MapHasRequestedClip(AnimationMap map)
+		{
+			if (map == null || map.animationClips == null)
+			{
+				return false;
+			}
+
+			for (int i = 0; i < map.animationClips.Count; i++)
+			{
+				AnimationMap.MapEntry entry = map.animationClips[i];
+				if (string.Equals(entry.name, animationMapKey, System.StringComparison.OrdinalIgnoreCase) ||
+					(entry.clip != null && string.Equals(entry.clip.name, animationMapKey, System.StringComparison.OrdinalIgnoreCase)))
+				{
+					return true;
+				}
+			}
+			return map.animationClips.Count == 1;
+		}
+
+		private static bool IsChildOf(Transform child, Transform ancestor)
+		{
+			if (child == null || ancestor == null)
+			{
+				return false;
+			}
+
+			Transform current = child;
+			while (current != null)
+			{
+				if (current == ancestor)
+				{
+					return true;
+				}
+				current = current.parent;
+			}
+			return false;
 		}
 	}
 }

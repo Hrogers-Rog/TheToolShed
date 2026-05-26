@@ -40,6 +40,12 @@
           "speed": 1.0,
           "useTransformFallback": true,
           "fallbackTransformName": "PipeTurner",
+          "fallbackTransformNames": [
+            "PipeTurner",
+            "PipeTunrner",
+            "RotatePipe"
+          ],
+          "fallbackDurationSeconds": 1.25,
           "fallbackInactiveLocalEuler": {
             "x": 0.0,
             "y": 0.0,

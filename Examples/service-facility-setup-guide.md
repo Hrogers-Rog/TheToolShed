@@ -182,7 +182,12 @@ Wood-fired steam equipment must have a `pulpwood` load slot and a `water` load s
         {
           "animationMapKey": "PipeTurner",
           "boolKey": "prepareLoad",
-          "speed": 1
+          "speed": 1,
+          "fallbackTransformNames": [
+            "PipeTurner",
+            "RotatePipe"
+          ],
+          "fallbackDurationSeconds": 1.25
         }
       ],
       "particleEffects": [
@@ -259,6 +264,10 @@ Use `sourceIndustryId` when the loader should be finite and drain persisted indu
 
 - `prepareLoad`: move into loading position.
 - `animateLoad`: show active loading flow.
+
+Use `fallbackDurationSeconds` when `useTransformFallback` is enabled and the fallback transform should move at a fixed, scenery-friendly speed. If it is omitted, Toolshed uses the animation clip length when available and remembers the last known length during scenery reloads; the built-in safety default is one second.
+
+Use `fallbackTransformNames` when the same asset exists in multiple community exports with different animated-empty names. Toolshed tries `fallbackTransformName` first, then each entry in `fallbackTransformNames`.
 
 Use `requireServiceCondition` when a chute, pipe, spout, or hose must be in the service position before transfer. For the ALW bunker-C loader, `request = true` means the pipe is down, so `serviceConditionBoolKey = "request"` blocks both vanilla loading and Toolshed's extended tender search while the pipe is raised.
 

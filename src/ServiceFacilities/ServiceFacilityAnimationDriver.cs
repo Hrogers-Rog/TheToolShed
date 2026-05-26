@@ -26,8 +26,10 @@ namespace Toolshed.ServiceFacilities
 		public bool debugLogging;
 		public bool useTransformFallback;
 		public string fallbackTransformName;
+		public string[] fallbackTransformNames;
 		public Vector3 fallbackInactiveLocalEuler;
 		public Vector3 fallbackActiveLocalEuler;
+		public float fallbackDurationSeconds;
 
 		private AnimationClip _clip;
 		private float _time;
@@ -43,9 +45,45 @@ namespace Toolshed.ServiceFacilities
 		private Transform _fallbackTransform;
 		private float _fallbackProgress;
 		private bool _fallbackLogged;
+		private float _nextBindingRefreshTime;
+		private float _lastKnownFallbackDuration = DefaultFallbackDurationSeconds;
+
+		private const float BindingRefreshIntervalSeconds = 0.5f;
+		private const float DefaultFallbackDurationSeconds = 1f;
+		private const float MinimumFallbackDurationSeconds = 0.05f;
 
 		private void OnEnable()
 		{
+			ResolveClip();
+			EnsurePlayable();
+			Sample(TargetValue() ? ClipLength() : 0f);
+		}
+
+		public void RefreshBinding(AnimationMap map, GameObject root)
+		{
+			if (animationMap == map && sampleRoot == root)
+			{
+				if (_clip == null || _resolveFailed)
+				{
+					_resolveFailed = false;
+					ResolveClip();
+					EnsurePlayable();
+					Sample(TargetValue() ? ClipLength() : 0f);
+				}
+				return;
+			}
+
+			DisposePlayable();
+			animationMap = map;
+			sampleRoot = root;
+			_clip = null;
+			_resolvedSampleRoot = null;
+			_resolveFailed = false;
+			_playableFailed = false;
+			_fallbackTransform = null;
+			_fallbackLogged = false;
+			_movementProbeSnapshot = null;
+			_nextBindingRefreshTime = 0f;
 			ResolveClip();
 			EnsurePlayable();
 			Sample(TargetValue() ? ClipLength() : 0f);
@@ -63,16 +101,13 @@ namespace Toolshed.ServiceFacilities
 
 		private void Update()
 		{
-			if (keyValueObject == null || animationMap == null)
+			if (keyValueObject == null)
 			{
 				return;
 			}
 
+			RefreshStaleBindingIfNeeded();
 			ResolveClip();
-			if (_clip == null)
-			{
-				return;
-			}
 			EnsurePlayable();
 
 			bool active = TargetValue();
@@ -80,6 +115,10 @@ namespace Toolshed.ServiceFacilities
 			if (DriveTransformFallback(active))
 			{
 				CheckMovementProbe();
+				return;
+			}
+			if (_clip == null)
+			{
 				return;
 			}
 			if (DrivePlayable(active))
@@ -104,6 +143,75 @@ namespace Toolshed.ServiceFacilities
 
 			Sample(_time);
 			CheckMovementProbe();
+		}
+
+		private void LateUpdate()
+		{
+			if (keyValueObject == null || !useTransformFallback)
+			{
+				return;
+			}
+
+			// Some scenery systems restore prefab transforms after Update when an asset is
+			// streamed or rebound. Re-applying the fallback pose in LateUpdate keeps the
+			// service handle visually in sync with the persisted KeyValueObject state.
+			RefreshStaleBindingIfNeeded();
+			if (_fallbackTransform == null)
+			{
+				_fallbackTransform = ResolveFallbackTransform();
+			}
+			ApplyFallbackRotation();
+		}
+
+		private void RefreshStaleBindingIfNeeded()
+		{
+			if (Time.unscaledTime < _nextBindingRefreshTime)
+			{
+				return;
+			}
+			_nextBindingRefreshTime = Time.unscaledTime + BindingRefreshIntervalSeconds;
+
+			if (sampleRoot == null)
+			{
+				return;
+			}
+
+			bool mapStale = animationMap == null || !IsChildOf(animationMap.transform, sampleRoot.transform);
+			bool sampleStale = _resolvedSampleRoot != null && !IsChildOf(_resolvedSampleRoot.transform, sampleRoot.transform);
+			if (mapStale || sampleStale)
+			{
+				AnimationMap replacement = FindAnimationMapUnder(sampleRoot);
+				if (replacement != animationMap)
+				{
+					if (debugLogging)
+					{
+						Main.Log("[ServiceFacility][Loader] animation binding refreshed mapKey=" + animationMapKey +
+							", oldMap=" + (animationMap != null ? animationMap.name : "<null>") +
+							", newMap=" + (replacement != null ? replacement.name : "<null>") +
+							", root=" + sampleRoot.name);
+					}
+					RefreshBinding(replacement, sampleRoot);
+					return;
+				}
+
+				_resolvedSampleRoot = null;
+				_clip = null;
+				_resolveFailed = false;
+				_playableFailed = false;
+				DisposePlayable();
+			}
+
+			if (_fallbackTransform != null && !IsChildOf(_fallbackTransform, sampleRoot.transform))
+			{
+				if (debugLogging)
+				{
+					Main.Log("[ServiceFacility][Loader] animation transform fallback stale mapKey=" + animationMapKey +
+						", transform=" + _fallbackTransform.name +
+						", root=" + sampleRoot.name);
+				}
+				_fallbackTransform = null;
+				_fallbackLogged = false;
+			}
 		}
 
 		private bool TargetValue()
@@ -146,6 +254,7 @@ namespace Toolshed.ServiceFacilities
 			{
 				_resolvedSampleRoot = ResolveSampleRoot();
 			}
+			RememberFallbackDuration(_clip.length);
 			if (debugLogging)
 			{
 				Main.Log("[ServiceFacility][Loader] animation bound key=" + boolKey +
@@ -201,12 +310,12 @@ namespace Toolshed.ServiceFacilities
 				_fallbackProgress = active ? 1f : 0f;
 			}
 
-			float duration = Mathf.Max(ClipLength(), 0.1f);
+			float duration = FallbackDuration();
 			float target = active ? 1f : 0f;
 			_fallbackProgress = Mathf.MoveTowards(_fallbackProgress, target, Mathf.Max(speed, 0.01f) * Time.deltaTime / duration);
 			Quaternion inactive = Quaternion.Euler(fallbackInactiveLocalEuler);
 			Quaternion activeRotation = Quaternion.Euler(fallbackActiveLocalEuler);
-			_fallbackTransform.localRotation = Quaternion.Slerp(inactive, activeRotation, _fallbackProgress);
+			ApplyFallbackRotation(inactive, activeRotation);
 			_time = _fallbackProgress * duration;
 
 			if (debugLogging && !_fallbackLogged)
@@ -220,29 +329,106 @@ namespace Toolshed.ServiceFacilities
 			return true;
 		}
 
+		private float FallbackDuration()
+		{
+			if (fallbackDurationSeconds > MinimumFallbackDurationSeconds)
+			{
+				return fallbackDurationSeconds;
+			}
+
+			float clipLength = ClipLength();
+			if (clipLength > MinimumFallbackDurationSeconds)
+			{
+				RememberFallbackDuration(clipLength);
+				return clipLength;
+			}
+			return Mathf.Max(_lastKnownFallbackDuration, DefaultFallbackDurationSeconds);
+		}
+
+		private void RememberFallbackDuration(float duration)
+		{
+			if (duration > MinimumFallbackDurationSeconds)
+			{
+				_lastKnownFallbackDuration = duration;
+			}
+		}
+
+		private void ApplyFallbackRotation()
+		{
+			if (_fallbackTransform == null)
+			{
+				return;
+			}
+			ApplyFallbackRotation(Quaternion.Euler(fallbackInactiveLocalEuler), Quaternion.Euler(fallbackActiveLocalEuler));
+		}
+
+		private void ApplyFallbackRotation(Quaternion inactive, Quaternion activeRotation)
+		{
+			if (_fallbackTransform == null)
+			{
+				return;
+			}
+			_fallbackTransform.localRotation = Quaternion.Slerp(inactive, activeRotation, _fallbackProgress);
+		}
+
 		private Transform ResolveFallbackTransform()
 		{
 			GameObject root = sampleRoot != null ? sampleRoot : (animationMap != null ? animationMap.gameObject : gameObject);
-			if (string.IsNullOrWhiteSpace(fallbackTransformName))
+			string[] names = FallbackTransformNameCandidates();
+			if (names.Length == 0)
 			{
 				return root != null ? root.transform : null;
 			}
 
 			Transform[] transforms = root.GetComponentsInChildren<Transform>(true);
-			for (int i = 0; i < transforms.Length; i++)
+			for (int nameIndex = 0; nameIndex < names.Length; nameIndex++)
 			{
-				Transform transform = transforms[i];
-				if (transform != null && string.Equals(transform.name, fallbackTransformName, StringComparison.OrdinalIgnoreCase))
+				string candidateName = names[nameIndex];
+				for (int i = 0; i < transforms.Length; i++)
 				{
-					return transform;
+					Transform transform = transforms[i];
+					if (transform != null && string.Equals(transform.name, candidateName, StringComparison.OrdinalIgnoreCase))
+					{
+						return transform;
+					}
 				}
 			}
 
 			if (debugLogging)
 			{
-				Main.Warn("[ServiceFacility][Loader] animation transform fallback '" + fallbackTransformName + "' not found under " + (root != null ? root.name : "<null>"));
+				Main.Warn("[ServiceFacility][Loader] animation transform fallback '" + string.Join(", ", names) + "' not found under " + (root != null ? root.name : "<null>"));
 			}
 			return null;
+		}
+
+		private string[] FallbackTransformNameCandidates()
+		{
+			List<string> names = new List<string>();
+			AddNameCandidate(names, fallbackTransformName);
+			if (fallbackTransformNames != null)
+			{
+				for (int i = 0; i < fallbackTransformNames.Length; i++)
+				{
+					AddNameCandidate(names, fallbackTransformNames[i]);
+				}
+			}
+			return names.ToArray();
+		}
+
+		private static void AddNameCandidate(List<string> names, string name)
+		{
+			if (string.IsNullOrWhiteSpace(name))
+			{
+				return;
+			}
+			for (int i = 0; i < names.Count; i++)
+			{
+				if (string.Equals(names[i], name, StringComparison.OrdinalIgnoreCase))
+				{
+					return;
+				}
+			}
+			names.Add(name);
 		}
 
 		private bool TryResolveAnimationMapClip(out AnimationClip clip, out string source)
@@ -391,7 +577,7 @@ namespace Toolshed.ServiceFacilities
 
 		private void Sample(float time)
 		{
-			if (_clip == null || animationMap == null)
+			if (_clip == null)
 			{
 				return;
 			}
@@ -489,8 +675,21 @@ namespace Toolshed.ServiceFacilities
 			{
 				return;
 			}
-			_playable.Dispose();
-			_playable = null;
+			try
+			{
+				_playable.Dispose();
+			}
+			catch (Exception ex)
+			{
+				if (debugLogging)
+				{
+					Main.Warn("[ServiceFacility][Loader] ignored stale playable dispose mapKey=" + animationMapKey + ": " + ex.Message);
+				}
+			}
+			finally
+			{
+				_playable = null;
+			}
 		}
 
 		private GameObject SampleRoot()
@@ -499,7 +698,15 @@ namespace Toolshed.ServiceFacilities
 			{
 				return _resolvedSampleRoot;
 			}
-			return sampleRoot != null ? sampleRoot : animationMap.gameObject;
+			if (sampleRoot != null)
+			{
+				return sampleRoot;
+			}
+			if (animationMap != null)
+			{
+				return animationMap.gameObject;
+			}
+			return gameObject;
 		}
 
 		private GameObject ResolveSampleRoot()
@@ -611,6 +818,68 @@ namespace Toolshed.ServiceFacilities
 				transform.localScale = scales[i];
 			}
 			return changed;
+		}
+
+		private AnimationMap FindAnimationMapUnder(GameObject root)
+		{
+			if (root == null)
+			{
+				return null;
+			}
+
+			AnimationMap[] maps = root.GetComponentsInChildren<AnimationMap>(true);
+			if (maps == null || maps.Length == 0)
+			{
+				return null;
+			}
+
+			for (int i = 0; i < maps.Length; i++)
+			{
+				AnimationMap map = maps[i];
+				if (MapHasRequestedClip(map))
+				{
+					return map;
+				}
+			}
+			return maps[0];
+		}
+
+		private bool MapHasRequestedClip(AnimationMap map)
+		{
+			if (map == null || map.animationClips == null)
+			{
+				return false;
+			}
+
+			for (int i = 0; i < map.animationClips.Count; i++)
+			{
+				AnimationMap.MapEntry entry = map.animationClips[i];
+				if (string.Equals(entry.name, animationMapKey, StringComparison.OrdinalIgnoreCase) ||
+					(entry.clip != null && string.Equals(entry.clip.name, animationMapKey, StringComparison.OrdinalIgnoreCase)))
+				{
+					return true;
+				}
+			}
+			return map.animationClips.Count == 1;
+		}
+
+		private static bool IsChildOf(Transform child, Transform ancestor)
+		{
+			if (child == null || ancestor == null)
+			{
+				return false;
+			}
+
+			Transform current = child;
+			while (current != null)
+			{
+				if (current == ancestor)
+				{
+					return true;
+				}
+				current = current.parent;
+			}
+			return false;
 		}
 
 		private void BeginMovementProbe(bool active)
