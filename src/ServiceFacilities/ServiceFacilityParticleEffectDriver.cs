@@ -1,0 +1,759 @@
+using System;
+using System.Collections.Generic;
+using KeyValue.Runtime;
+using UnityEngine;
+
+namespace Toolshed.ServiceFacilities
+{
+	/// <summary>
+	/// Small key-driven particle bridge for service assets.
+	/// Vanilla water uses a custom WaterCylinderController; this gives custom loaders a reusable,
+	/// data-driven way to turn an existing or runtime-created ParticleSystem on while loading.
+	/// </summary>
+	internal sealed class ServiceFacilityParticleEffectDriver : MonoBehaviour
+	{
+		public KeyValueObject keyValueObject;
+		public string boolKey = "animateLoad";
+		public string requiredBoolKey;
+		public bool requiredBoolExpectedValue = true;
+		public GameObject sampleRoot;
+		public string effectObjectName;
+		public string[] effectObjectNames;
+		public bool invert;
+		public bool createIfMissing;
+		public bool requireParentTransform;
+		public string flowOriginId;
+		public string flowOriginFollowTransformName;
+		public string[] flowOriginFollowTransformNames;
+		public bool flowOriginFollowPreserveWorldPosition = true;
+		public string parentTransformName;
+		public string[] parentTransformNames;
+		public Vector3 localPosition;
+		public Vector3 localEuler;
+		public Vector3 localScale = Vector3.one;
+		public float emissionRate = 40f;
+		public float startLifetime = 0.55f;
+		public float startSpeed = 1.25f;
+		public float startSize = 0.08f;
+		public float gravityModifier = 1f;
+		public bool overrideStartColor;
+		public Color startColor = new Color(0.08f, 0.06f, 0.04f, 0.95f);
+		public bool createVisibleStream;
+		public bool streamUsesWorldDown = true;
+		public Vector3 streamLocalStart;
+		public Vector3 streamLocalEnd = new Vector3(0f, -2.25f, 0f);
+		public float streamLength = 2.25f;
+		public float streamWidth = 0.12f;
+		public Color streamColor = new Color(0.16f, 0.09f, 0.035f, 0.95f);
+		public bool debugOriginMarker;
+		public bool clearOnStop = true;
+		public bool debugLogging;
+
+		private readonly List<ParticleSystem> _particleSystems = new List<ParticleSystem>();
+		private readonly List<IDisposable> _observers = new List<IDisposable>();
+		private Material _createdMaterial;
+		private GameObject _root;
+		private GameObject _createdParticleObject;
+		private GameObject _streamObject;
+		private GameObject _debugOriginObject;
+		private LineRenderer _streamRenderer;
+		private Transform _streamAnchor;
+		private ServiceFacilityFlowOrigin _selectedFlowOrigin;
+		private Transform _selectedFlowRoot;
+		private bool _usingFallbackParent;
+		private bool _loggedMissingEffect;
+		private bool _loggedMissingFlowOriginFollow;
+		private float _nextParentRetryTime;
+		private float _nextFlowOriginFollowRetryTime;
+
+		private void OnEnable()
+		{
+			ResolveParticleSystems();
+			if (keyValueObject != null && !string.IsNullOrEmpty(boolKey))
+			{
+				_observers.Add(keyValueObject.Observe(boolKey, PropertyChanged, true));
+				if (!string.IsNullOrEmpty(requiredBoolKey) && !string.Equals(requiredBoolKey, boolKey, StringComparison.Ordinal))
+				{
+					_observers.Add(keyValueObject.Observe(requiredBoolKey, PropertyChanged, true));
+				}
+			}
+		}
+
+		private void OnDisable()
+		{
+			for (int i = 0; i < _observers.Count; i++)
+			{
+				if (_observers[i] != null)
+				{
+					_observers[i].Dispose();
+				}
+			}
+			_observers.Clear();
+			StopAll(clearOnStop);
+		}
+
+		private void OnDestroy()
+		{
+			if (_createdMaterial != null)
+			{
+				Destroy(_createdMaterial);
+				_createdMaterial = null;
+			}
+		}
+
+		private void LateUpdate()
+		{
+			RetryFlowOriginFollowBinding();
+			RetryParentBinding();
+			if (_streamRenderer != null && _streamRenderer.enabled)
+			{
+				UpdateStreamPositions();
+			}
+		}
+
+		private void PropertyChanged(Value value)
+		{
+			bool shouldPlay = ShouldPlay();
+			if (shouldPlay)
+			{
+				PlayAll();
+			}
+			else
+			{
+				StopAll(clearOnStop);
+			}
+		}
+
+		private bool ShouldPlay()
+		{
+			if (keyValueObject == null || string.IsNullOrEmpty(boolKey))
+			{
+				return false;
+			}
+			bool value = keyValueObject[boolKey].BoolValue;
+			if (invert)
+			{
+				value = !value;
+			}
+			if (!value)
+			{
+				return false;
+			}
+			if (string.IsNullOrEmpty(requiredBoolKey))
+			{
+				return true;
+			}
+			return keyValueObject[requiredBoolKey].BoolValue == requiredBoolExpectedValue;
+		}
+
+		private void ResolveParticleSystems()
+		{
+			_particleSystems.Clear();
+			GameObject root = sampleRoot != null ? sampleRoot : gameObject;
+			_root = root;
+			foreach (string candidateName in CandidateNames())
+			{
+				Transform match = FindChildByName(root.transform, candidateName);
+				if (match == null)
+				{
+					continue;
+				}
+				AddParticleSystems(match.gameObject);
+			}
+
+			if (_particleSystems.Count == 0 && createIfMissing)
+			{
+				ParticleSystem created = CreateParticleSystem(root);
+				if (created != null)
+				{
+					_particleSystems.Add(created);
+				}
+			}
+			if (createVisibleStream)
+			{
+				EnsureVisibleStream(root);
+			}
+
+			for (int i = 0; i < _particleSystems.Count; i++)
+			{
+				ConfigureParticleSystem(_particleSystems[i]);
+			}
+
+			if (_particleSystems.Count == 0 && debugLogging && !_loggedMissingEffect)
+			{
+				_loggedMissingEffect = true;
+				Main.Warn("[ServiceFacility][Loader] particle effect '" + EffectDescription + "' was not found under " + root.name);
+			}
+		}
+
+		private IEnumerable<string> CandidateNames()
+		{
+			if (!string.IsNullOrWhiteSpace(effectObjectName))
+			{
+				yield return effectObjectName;
+			}
+			if (effectObjectNames == null)
+			{
+				yield break;
+			}
+			for (int i = 0; i < effectObjectNames.Length; i++)
+			{
+				if (!string.IsNullOrWhiteSpace(effectObjectNames[i]))
+				{
+					yield return effectObjectNames[i];
+				}
+			}
+		}
+
+		private void AddParticleSystems(GameObject root)
+		{
+			ParticleSystem direct = root.GetComponent<ParticleSystem>();
+			if (direct != null)
+			{
+				_particleSystems.Add(direct);
+			}
+			ParticleSystem[] children = root.GetComponentsInChildren<ParticleSystem>(true);
+			for (int i = 0; i < children.Length; i++)
+			{
+				ParticleSystem particleSystem = children[i];
+				if (particleSystem != null && !_particleSystems.Contains(particleSystem))
+				{
+					_particleSystems.Add(particleSystem);
+				}
+			}
+		}
+
+		private ParticleSystem CreateParticleSystem(GameObject root)
+		{
+			bool usedFallback;
+			Transform parent = ResolveParent(root, out usedFallback);
+			_usingFallbackParent |= usedFallback;
+
+			GameObject effectObject = new GameObject("Toolshed Oil Flow");
+			_createdParticleObject = effectObject;
+			effectObject.transform.SetParent(parent, false);
+			effectObject.transform.localPosition = localPosition;
+			effectObject.transform.localRotation = Quaternion.Euler(localEuler);
+			effectObject.transform.localScale = localScale == Vector3.zero ? Vector3.one : localScale;
+			EnsureDebugOriginMarker(effectObject.transform);
+			return effectObject.AddComponent<ParticleSystem>();
+		}
+
+		private void EnsureVisibleStream(GameObject root)
+		{
+			bool usedFallback;
+			Transform parent = ResolveParent(root, out usedFallback);
+			_usingFallbackParent |= usedFallback;
+
+			_streamAnchor = parent;
+			_streamObject = new GameObject("Toolshed Oil Stream");
+			_streamObject.transform.SetParent(parent, false);
+			_streamObject.transform.localPosition = localPosition;
+			_streamObject.transform.localRotation = Quaternion.Euler(localEuler);
+			_streamObject.transform.localScale = Vector3.one;
+			_streamAnchor = _streamObject.transform;
+			EnsureDebugOriginMarker(_streamObject.transform);
+
+			_streamRenderer = _streamObject.AddComponent<LineRenderer>();
+			_streamRenderer.positionCount = 2;
+			_streamRenderer.useWorldSpace = streamUsesWorldDown;
+			_streamRenderer.startWidth = Mathf.Max(0.001f, streamWidth);
+			_streamRenderer.endWidth = Mathf.Max(0.001f, streamWidth * 0.8f);
+			_streamRenderer.numCapVertices = 6;
+			_streamRenderer.numCornerVertices = 2;
+			_streamRenderer.textureMode = LineTextureMode.Stretch;
+			_streamRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+			_streamRenderer.receiveShadows = false;
+			_streamRenderer.material = CreateParticleMaterial();
+			_streamRenderer.startColor = streamColor;
+			_streamRenderer.endColor = streamColor;
+			UpdateStreamPositions();
+			_streamRenderer.enabled = false;
+
+			if (debugLogging)
+			{
+				Main.Log("[ServiceFacility][Loader] visible stream created anchor=" + parent.name +
+					", worldDown=" + streamUsesWorldDown +
+					", localPosition=" + localPosition +
+					", width=" + streamWidth.ToString("0.###") +
+					", length=" + streamLength.ToString("0.###"));
+			}
+		}
+
+		private void ConfigureParticleSystem(ParticleSystem particleSystem)
+		{
+			if (particleSystem == null)
+			{
+				return;
+			}
+
+			ParticleSystem.MainModule main = particleSystem.main;
+			main.loop = true;
+			main.playOnAwake = false;
+			main.startLifetime = Mathf.Max(0.05f, startLifetime);
+			main.startSpeed = Mathf.Max(0f, startSpeed);
+			main.startSize = Mathf.Max(0.001f, startSize);
+			main.gravityModifier = gravityModifier;
+			if (overrideStartColor)
+			{
+				main.startColor = new ParticleSystem.MinMaxGradient(startColor);
+			}
+
+			ParticleSystem.EmissionModule emission = particleSystem.emission;
+			emission.enabled = true;
+			emission.rateOverTime = new ParticleSystem.MinMaxCurve(Mathf.Max(0f, emissionRate));
+
+			ParticleSystem.ShapeModule shape = particleSystem.shape;
+			shape.enabled = true;
+			shape.shapeType = ParticleSystemShapeType.Cone;
+			shape.angle = 3f;
+			shape.radius = 0.025f;
+
+			ParticleSystemRenderer renderer = particleSystem.GetComponent<ParticleSystemRenderer>();
+			if (renderer != null)
+			{
+				renderer.renderMode = ParticleSystemRenderMode.Billboard;
+				renderer.material = CreateParticleMaterial();
+			}
+
+			particleSystem.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+		}
+
+		private void EnsureDebugOriginMarker(Transform parent)
+		{
+			if (!debugOriginMarker || parent == null || _debugOriginObject != null)
+			{
+				return;
+			}
+
+			_debugOriginObject = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+			_debugOriginObject.name = "Toolshed Oil Flow Debug Origin";
+			_debugOriginObject.transform.SetParent(parent, false);
+			_debugOriginObject.transform.localPosition = Vector3.zero;
+			_debugOriginObject.transform.localRotation = Quaternion.identity;
+			_debugOriginObject.transform.localScale = new Vector3(0.12f, 0.12f, 0.12f);
+			Collider collider = _debugOriginObject.GetComponent<Collider>();
+			if (collider != null)
+			{
+				Destroy(collider);
+			}
+			Renderer renderer = _debugOriginObject.GetComponent<Renderer>();
+			if (renderer != null)
+			{
+				renderer.material.color = Color.yellow;
+			}
+		}
+
+		private Material CreateParticleMaterial()
+		{
+			if (_createdMaterial != null)
+			{
+				return _createdMaterial;
+			}
+
+			Shader shader = Shader.Find("Sprites/Default");
+			if (shader == null)
+			{
+				shader = Shader.Find("Unlit/Color");
+			}
+			if (shader == null)
+			{
+				shader = Shader.Find("Particles/Standard Unlit");
+			}
+			if (shader == null)
+			{
+				shader = Shader.Find("Legacy Shaders/Particles/Alpha Blended");
+			}
+			if (shader != null)
+			{
+				_createdMaterial = new Material(shader);
+			}
+			else
+			{
+				return null;
+			}
+			_createdMaterial.color = overrideStartColor ? startColor : streamColor;
+			SetMaterialColorIfPresent(_createdMaterial, "_BaseColor", overrideStartColor ? startColor : streamColor);
+			SetMaterialColorIfPresent(_createdMaterial, "_Color", overrideStartColor ? startColor : streamColor);
+			SetMaterialColorIfPresent(_createdMaterial, "_TintColor", overrideStartColor ? startColor : streamColor);
+			return _createdMaterial;
+		}
+
+		private Transform ResolveParent(GameObject root, out bool usedFallback)
+		{
+			Transform fallback = root != null ? root.transform : transform;
+			ServiceFacilityFlowOrigin flowOrigin = FindFlowOrigin(fallback);
+			if (flowOrigin != null)
+			{
+				AttachFlowOriginToFollowTransform(flowOrigin, fallback);
+				_selectedFlowOrigin = flowOrigin;
+				_selectedFlowRoot = fallback;
+				usedFallback = false;
+				if (debugLogging)
+				{
+					Main.Log("[ServiceFacility][Loader] particle flow origin component selected " + flowOrigin.name +
+						" id=" + (flowOrigin.originId ?? "") +
+						" under " + fallback.name);
+				}
+				return flowOrigin.transform;
+			}
+
+			foreach (string candidateName in ParentCandidateNames())
+			{
+				Transform match = FindChildByName(fallback, candidateName);
+				if (match != null)
+				{
+					usedFallback = false;
+					return match;
+				}
+			}
+
+			if (debugLogging && (!string.IsNullOrWhiteSpace(parentTransformName) || parentTransformNames != null && parentTransformNames.Length > 0))
+			{
+				Main.Warn("[ServiceFacility][Loader] particle parent '" + ParentDescription + "' was not found under " + fallback.name + "; using root.");
+			}
+			usedFallback = true;
+			return fallback;
+		}
+
+		private void RetryParentBinding()
+		{
+			if (!_usingFallbackParent || _root == null || Time.unscaledTime < _nextParentRetryTime)
+			{
+				return;
+			}
+			_nextParentRetryTime = Time.unscaledTime + 1f;
+			ServiceFacilityFlowOrigin flowOrigin = FindFlowOrigin(_root.transform);
+			if (flowOrigin != null)
+			{
+				AttachFlowOriginToFollowTransform(flowOrigin, _root.transform);
+				_selectedFlowOrigin = flowOrigin;
+				_selectedFlowRoot = _root.transform;
+				RebindCreatedEffects(flowOrigin.transform);
+				_usingFallbackParent = false;
+				if (debugLogging)
+				{
+					Main.Log("[ServiceFacility][Loader] particle parent rebound to flow origin component " +
+						flowOrigin.name + " id=" + (flowOrigin.originId ?? "") + " under " + _root.name);
+				}
+				if (ShouldPlay())
+				{
+					PlayAll();
+				}
+				return;
+			}
+			foreach (string candidateName in ParentCandidateNames())
+			{
+				Transform match = FindChildByName(_root.transform, candidateName);
+				if (match == null)
+				{
+					continue;
+				}
+				RebindCreatedEffects(match);
+				_usingFallbackParent = false;
+				if (debugLogging)
+				{
+					Main.Log("[ServiceFacility][Loader] particle parent rebound to " + match.name + " under " + _root.name);
+				}
+				if (ShouldPlay())
+				{
+					PlayAll();
+				}
+				return;
+			}
+		}
+
+		private void RetryFlowOriginFollowBinding()
+		{
+			if (_selectedFlowOrigin == null || _selectedFlowRoot == null || !HasFlowOriginFollowCandidates() ||
+				Time.unscaledTime < _nextFlowOriginFollowRetryTime)
+			{
+				return;
+			}
+			_nextFlowOriginFollowRetryTime = Time.unscaledTime + 1f;
+			AttachFlowOriginToFollowTransform(_selectedFlowOrigin, _selectedFlowRoot);
+		}
+
+		private ServiceFacilityFlowOrigin FindFlowOrigin(Transform root)
+		{
+			if (root == null)
+			{
+				return null;
+			}
+			ServiceFacilityFlowOrigin[] origins = root.GetComponentsInChildren<ServiceFacilityFlowOrigin>(true);
+			if (origins == null || origins.Length == 0)
+			{
+				return null;
+			}
+			for (int i = 0; i < origins.Length; i++)
+			{
+				ServiceFacilityFlowOrigin origin = origins[i];
+				if (origin != null && MatchesFlowOriginId(origin.originId))
+				{
+					return origin;
+				}
+			}
+			return string.IsNullOrWhiteSpace(flowOriginId) ? origins[0] : null;
+		}
+
+		private void AttachFlowOriginToFollowTransform(ServiceFacilityFlowOrigin flowOrigin, Transform root)
+		{
+			if (flowOrigin == null || root == null || !HasFlowOriginFollowCandidates())
+			{
+				return;
+			}
+
+			Transform followTransform = null;
+			foreach (string candidateName in FlowOriginFollowCandidateNames())
+			{
+				followTransform = FindChildByName(root, candidateName);
+				if (followTransform != null)
+				{
+					break;
+				}
+			}
+			if (followTransform == null)
+			{
+				if (debugLogging && !_loggedMissingFlowOriginFollow)
+				{
+					_loggedMissingFlowOriginFollow = true;
+					Main.Warn("[ServiceFacility][Loader] flow origin follow transform '" +
+						FlowOriginFollowDescription + "' was not found under " + root.name + ".");
+				}
+				return;
+			}
+			if (flowOrigin.transform.parent == followTransform)
+			{
+				return;
+			}
+
+			flowOrigin.transform.SetParent(followTransform, flowOriginFollowPreserveWorldPosition);
+			if (debugLogging)
+			{
+				Main.Log("[ServiceFacility][Loader] flow origin " + flowOrigin.name +
+					" attached to animated transform " + followTransform.name +
+					", preserveWorld=" + flowOriginFollowPreserveWorldPosition +
+					", localPosition=" + flowOrigin.transform.localPosition +
+					", localEuler=" + flowOrigin.transform.localEulerAngles);
+			}
+			UpdateStreamPositions();
+		}
+
+		private bool MatchesFlowOriginId(string candidate)
+		{
+			return string.IsNullOrWhiteSpace(flowOriginId) ||
+				string.Equals(candidate ?? "", flowOriginId, StringComparison.OrdinalIgnoreCase);
+		}
+
+		private void RebindCreatedEffects(Transform parent)
+		{
+			if (parent == null)
+			{
+				return;
+			}
+			if (_createdParticleObject != null)
+			{
+				_createdParticleObject.transform.SetParent(parent, false);
+				_createdParticleObject.transform.localPosition = localPosition;
+				_createdParticleObject.transform.localRotation = Quaternion.Euler(localEuler);
+				_createdParticleObject.transform.localScale = localScale == Vector3.zero ? Vector3.one : localScale;
+			}
+			if (_streamObject != null)
+			{
+				_streamObject.transform.SetParent(parent, false);
+				_streamObject.transform.localPosition = localPosition;
+				_streamObject.transform.localRotation = Quaternion.Euler(localEuler);
+				_streamObject.transform.localScale = Vector3.one;
+				_streamAnchor = _streamObject.transform;
+			}
+			else
+			{
+				_streamAnchor = parent;
+			}
+			UpdateStreamPositions();
+		}
+
+		private IEnumerable<string> ParentCandidateNames()
+		{
+			if (!string.IsNullOrWhiteSpace(parentTransformName))
+			{
+				yield return parentTransformName;
+			}
+			if (parentTransformNames == null)
+			{
+				yield break;
+			}
+			for (int i = 0; i < parentTransformNames.Length; i++)
+			{
+				if (!string.IsNullOrWhiteSpace(parentTransformNames[i]) && !string.Equals(parentTransformNames[i], parentTransformName, StringComparison.OrdinalIgnoreCase))
+				{
+					yield return parentTransformNames[i];
+				}
+			}
+		}
+
+		private bool HasFlowOriginFollowCandidates()
+		{
+			if (!string.IsNullOrWhiteSpace(flowOriginFollowTransformName))
+			{
+				return true;
+			}
+			if (flowOriginFollowTransformNames == null)
+			{
+				return false;
+			}
+			for (int i = 0; i < flowOriginFollowTransformNames.Length; i++)
+			{
+				if (!string.IsNullOrWhiteSpace(flowOriginFollowTransformNames[i]))
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
+		private IEnumerable<string> FlowOriginFollowCandidateNames()
+		{
+			if (!string.IsNullOrWhiteSpace(flowOriginFollowTransformName))
+			{
+				yield return flowOriginFollowTransformName;
+			}
+			if (flowOriginFollowTransformNames == null)
+			{
+				yield break;
+			}
+			for (int i = 0; i < flowOriginFollowTransformNames.Length; i++)
+			{
+				if (!string.IsNullOrWhiteSpace(flowOriginFollowTransformNames[i]) &&
+					!string.Equals(flowOriginFollowTransformNames[i], flowOriginFollowTransformName, StringComparison.OrdinalIgnoreCase))
+				{
+					yield return flowOriginFollowTransformNames[i];
+				}
+			}
+		}
+
+		private static void SetMaterialColorIfPresent(Material material, string propertyName, Color color)
+		{
+			if (material != null && material.HasProperty(propertyName))
+			{
+				material.SetColor(propertyName, color);
+			}
+		}
+
+		private void UpdateStreamPositions()
+		{
+			if (_streamRenderer == null)
+			{
+				return;
+			}
+			if (streamUsesWorldDown)
+			{
+				Transform anchor = _streamAnchor != null ? _streamAnchor : transform;
+				Vector3 start = anchor.TransformPoint(streamLocalStart);
+				_streamRenderer.SetPosition(0, start);
+				_streamRenderer.SetPosition(1, start + Vector3.down * Mathf.Max(0.01f, streamLength));
+				return;
+			}
+
+			_streamRenderer.SetPosition(0, streamLocalStart);
+			_streamRenderer.SetPosition(1, streamLocalEnd);
+		}
+
+		private void PlayAll()
+		{
+			if (requireParentTransform && _usingFallbackParent)
+			{
+				return;
+			}
+			if (_streamRenderer != null)
+			{
+				UpdateStreamPositions();
+				_streamRenderer.enabled = true;
+			}
+			for (int i = 0; i < _particleSystems.Count; i++)
+			{
+				ParticleSystem particleSystem = _particleSystems[i];
+				if (particleSystem != null && !particleSystem.isPlaying)
+				{
+					particleSystem.Play(true);
+				}
+			}
+		}
+
+		private void StopAll(bool clear)
+		{
+			if (_streamRenderer != null)
+			{
+				_streamRenderer.enabled = false;
+			}
+			ParticleSystemStopBehavior stopBehavior = clear ? ParticleSystemStopBehavior.StopEmittingAndClear : ParticleSystemStopBehavior.StopEmitting;
+			for (int i = 0; i < _particleSystems.Count; i++)
+			{
+				ParticleSystem particleSystem = _particleSystems[i];
+				if (particleSystem != null)
+				{
+					particleSystem.Stop(true, stopBehavior);
+				}
+			}
+		}
+
+		private static Transform FindChildByName(Transform root, string targetName)
+		{
+			if (root == null || string.IsNullOrWhiteSpace(targetName))
+			{
+				return null;
+			}
+			if (string.Equals(root.name, targetName, StringComparison.OrdinalIgnoreCase))
+			{
+				return root;
+			}
+			for (int i = 0; i < root.childCount; i++)
+			{
+				Transform match = FindChildByName(root.GetChild(i), targetName);
+				if (match != null)
+				{
+					return match;
+				}
+			}
+			return null;
+		}
+
+		private string EffectDescription
+		{
+			get
+			{
+				if (!string.IsNullOrWhiteSpace(effectObjectName))
+				{
+					return effectObjectName;
+				}
+				return createIfMissing ? "runtime oil flow" : "<unnamed>";
+			}
+		}
+
+		private string ParentDescription
+		{
+			get
+			{
+				List<string> names = new List<string>();
+				foreach (string candidateName in ParentCandidateNames())
+				{
+					names.Add(candidateName);
+				}
+				return names.Count > 0 ? string.Join(", ", names.ToArray()) : "<none>";
+			}
+		}
+
+		private string FlowOriginFollowDescription
+		{
+			get
+			{
+				List<string> names = new List<string>();
+				foreach (string candidateName in FlowOriginFollowCandidateNames())
+				{
+					names.Add(candidateName);
+				}
+				return names.Count > 0 ? string.Join(", ", names.ToArray()) : "<none>";
+			}
+		}
+	}
+}

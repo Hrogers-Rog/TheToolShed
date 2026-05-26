@@ -1,0 +1,17 @@
+{
+  "Id": "Toolshed.ServiceFacilityTest.FUSE",
+  "DisplayName": "Toolshed Service Facility Test (FUSE)",
+  "Author": "Hunter Rogers",
+  "Version": "0.1.0",
+  "ManagerVersion": "0.27.10",
+  "Requirements": [
+    "FUSE"
+  ],
+  "LoadAfter": [
+    "FUSE"
+  ],
+  "FuseLoadPriority": 100,
+  "FuseDataFiles": [
+    "service-facility-test.fuse.json"
+  ]
+}
