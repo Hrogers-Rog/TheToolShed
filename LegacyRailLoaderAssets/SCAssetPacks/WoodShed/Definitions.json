@@ -1,0 +1,23 @@
+{
+  "objects": [
+    {
+      "identifier": "wood-shed",
+      "metadata": {
+        "name": "Wood Fuel Shed",
+        "description": "Wood fuel shed scenery asset for Toolshed service-facility setups.",
+        "tags": [
+          "structure",
+          "service",
+          "wood"
+        ],
+        "credits": null
+      },
+      "definition": {
+        "kind": "Scenery",
+        "modelIdentifier": "wood-shed",
+        "cullingRadius": 50,
+        "components": []
+      }
+    }
+  ]
+}

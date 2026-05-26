@@ -1,0 +1,25 @@
+{
+  "manifestVersion": 5,
+  "id": "Toolshed.ServiceFacilityTest",
+  "name": "Toolshed Service Facility Test",
+  "version": "0.1.0",
+  "author": "Hunter Rogers",
+  "updateUrl": null,
+  "requires": [
+    {
+      "id": "railloader",
+      "notBefore": "1.8.0"
+    },
+    "Toolshed.ServiceFacilityAssets"
+  ],
+  "loadAfter": [
+    "Toolshed.ServiceFacilityAssets"
+  ],
+  "conflictsWith": [],
+  "mixintos": {
+    "game-graph": [
+      "file(scenery.json)"
+    ]
+  },
+  "assemblies": []
+}
