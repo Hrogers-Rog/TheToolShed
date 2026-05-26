@@ -297,7 +297,12 @@ namespace Toolshed.ServiceFacilities
 			}
 
 			UniversalServiceFacilityComponent existing;
-			if (Applied.TryGetValue(id, out existing) && existing != null)
+			if (Applied.TryGetValue(id, out existing) && existing == null)
+			{
+				Applied.Remove(id);
+				RemoveBindingsFor(id);
+			}
+			else if (existing != null)
 			{
 				GameObject existingTarget = existing.transform.parent != null ? existing.transform.parent.gameObject : existing.gameObject;
 				EnsureAnimations(definition, existing.gameObject, existingTarget);
@@ -522,36 +527,38 @@ namespace Toolshed.ServiceFacilities
 					continue;
 				}
 
-				string id = definition.EffectiveId + ":" + animation.animationMapKey + ":" + animation.boolKey;
-				if (AnimationBound.Contains(id))
-				{
-					continue;
-				}
-
 				AnimationMap map = target.GetComponentsInChildren<AnimationMap>(true).FirstOrDefault();
 				if (map == null)
 				{
 					continue;
 				}
 
-				GameObject driverObject = new GameObject("Toolshed Animation - " + animation.animationMapKey);
-				driverObject.SetActive(false);
-				driverObject.transform.SetParent(serviceRoot.transform, false);
-				ServiceFacilityAnimationDriver driver = driverObject.AddComponent<ServiceFacilityAnimationDriver>();
+				string boolKey = string.IsNullOrWhiteSpace(animation.boolKey) ? "prepareLoad" : animation.boolKey;
+				ServiceFacilityAnimationDriver driver = serviceRoot.GetComponentsInChildren<ServiceFacilityAnimationDriver>(true)
+					.FirstOrDefault(item => item != null &&
+						string.Equals(item.animationMapKey, animation.animationMapKey, StringComparison.OrdinalIgnoreCase) &&
+						string.Equals(item.boolKey, boolKey, StringComparison.OrdinalIgnoreCase));
+				if (driver == null)
+				{
+					GameObject driverObject = new GameObject("Toolshed Animation - " + animation.animationMapKey);
+					driverObject.SetActive(false);
+					driverObject.transform.SetParent(serviceRoot.transform, false);
+					driver = driverObject.AddComponent<ServiceFacilityAnimationDriver>();
+				}
 				driver.keyValueObject = keyValue;
-				driver.boolKey = string.IsNullOrWhiteSpace(animation.boolKey) ? "prepareLoad" : animation.boolKey;
-				driver.animationMap = map;
-				driver.sampleRoot = target;
+				driver.boolKey = boolKey;
 				driver.animationMapKey = animation.animationMapKey;
 				driver.speed = animation.speed > 0f ? animation.speed : 1f;
 				driver.invert = animation.invert;
 				driver.debugLogging = definition.debugLogging;
 				driver.useTransformFallback = animation.useTransformFallback;
 				driver.fallbackTransformName = animation.fallbackTransformName;
+				driver.fallbackTransformNames = animation.fallbackTransformNames;
 				driver.fallbackInactiveLocalEuler = animation.fallbackInactiveLocalEuler;
 				driver.fallbackActiveLocalEuler = animation.fallbackActiveLocalEuler;
-				driverObject.SetActive(true);
-				AnimationBound.Add(id);
+				driver.fallbackDurationSeconds = animation.fallbackDurationSeconds;
+				driver.RefreshBinding(map, target);
+				driver.gameObject.SetActive(true);
 			}
 		}
 
@@ -576,27 +583,23 @@ namespace Toolshed.ServiceFacilities
 					continue;
 				}
 
-				string id = definition.EffectiveId + ":storage:" + animation.animationMapKey;
-				if (AnimationBound.Contains(id))
-				{
-					continue;
-				}
-
 				Load load = string.IsNullOrWhiteSpace(animation.loadId) ? serviceLoad : ResolveLoad(animation.loadId);
 				if (load == null)
 				{
 					continue;
 				}
 
-				GameObject driverObject = new GameObject("Toolshed Storage Animation - " + animation.animationMapKey);
-				driverObject.SetActive(false);
-				driverObject.transform.SetParent(serviceRoot.transform, false);
-				ServiceFacilityStorageAnimationDriver driver = driverObject.AddComponent<ServiceFacilityStorageAnimationDriver>();
-				driver.animationMap = map;
-				driver.sampleRoot = target;
+				ServiceFacilityStorageAnimationDriver driver = serviceRoot.GetComponentsInChildren<ServiceFacilityStorageAnimationDriver>(true)
+					.FirstOrDefault(item => item != null &&
+						string.Equals(item.animationMapKey, animation.animationMapKey, StringComparison.OrdinalIgnoreCase));
+				if (driver == null)
+				{
+					GameObject driverObject = new GameObject("Toolshed Storage Animation - " + animation.animationMapKey);
+					driverObject.SetActive(false);
+					driverObject.transform.SetParent(serviceRoot.transform, false);
+					driver = driverObject.AddComponent<ServiceFacilityStorageAnimationDriver>();
+				}
 				driver.animationMapKey = animation.animationMapKey;
-				driver.sourceIndustry = industry;
-				driver.load = load;
 				driver.capacity = animation.capacity > 0f ? animation.capacity : definition.facilityCapacity;
 				driver.invert = animation.invert;
 				driver.debugLogging = definition.debugLogging;
@@ -606,8 +609,23 @@ namespace Toolshed.ServiceFacilities
 				driver.fullLocalY = animation.fullLocalY;
 				driver.emptyLocalScaleZ = animation.emptyLocalScaleZ;
 				driver.fullLocalScaleZ = animation.fullLocalScaleZ;
-				driverObject.SetActive(true);
-				AnimationBound.Add(id);
+				driver.RefreshBinding(map, target, industry, load);
+				driver.gameObject.SetActive(true);
+			}
+		}
+
+		private static void RemoveBindingsFor(string idPrefix)
+		{
+			if (string.IsNullOrWhiteSpace(idPrefix) || AnimationBound.Count == 0)
+			{
+				return;
+			}
+
+			string prefix = idPrefix + ":";
+			List<string> matches = AnimationBound.Where(item => item.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList();
+			for (int i = 0; i < matches.Count; i++)
+			{
+				AnimationBound.Remove(matches[i]);
 			}
 		}
 
@@ -929,8 +947,10 @@ namespace Toolshed.ServiceFacilities
 		public bool invert;
 		public bool useTransformFallback;
 		public string fallbackTransformName;
+		public string[] fallbackTransformNames;
 		public Vector3 fallbackInactiveLocalEuler;
 		public Vector3 fallbackActiveLocalEuler;
+		public float fallbackDurationSeconds;
 	}
 
 	[Serializable]
