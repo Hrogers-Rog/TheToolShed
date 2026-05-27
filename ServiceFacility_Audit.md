@@ -92,7 +92,7 @@ Locomotive consumption flow:
 - Wood consumption is a first-pass estimate, not a final balance pass. Current value: `1.8` wood pounds per coal pound.
 - Wood validation accepts `pulpwood` plus `water` slots for steam equipment, but still needs in-game definition testing.
 - Bunker-c economy values are still conservative runtime load definitions. `pulpwood` reuses the base-game economy load.
-- Base-game `pulpwood` has `costPerUnit = 0`, so an `InterchangedIndustryLoader` can return loaded pulpwood cars without charging unless the RailLoader/FUSE test pack overrides `pulpwood.costPerUnit`.
+- Base-game `pulpwood` has `costPerUnit = 0`, so an `InterchangedIndustryLoader` can return loaded pulpwood cars without charging unless the FUSE test package overrides `pulpwood.costPerUnit`.
 - The ALW tank-loader asset pack contains scenery metadata and a ladder, but no declared service loader components.
 - The wood shed arrived as a bare Unity bundle. Toolshed now packages inferred catalog/definition metadata, but the internal prefab name must be validated in-game.
 - Ash, sand, maintenance, service ordering, startup/warmup simulation, AI servicing, and economy rebalance remain future ideas.
@@ -109,14 +109,14 @@ Implemented in Toolshed:
 - Keep vanilla `InterchangedIndustryLoader` for purchase/interchange, except water.
 - Add one reusable wrapper: `Toolshed.ServiceFacilities.UniversalServiceFacilityComponent`.
 - Add one runtime bridge: `Toolshed.ServiceFacilities.ServiceFacilityRuntime`.
-- Let RailLoader and FUSE both place plain scenery, then bind service behavior from `ToolshedServiceFacilities.json`.
-- Allow alias arrays for scenery ids and span ids so one service definition can bind to RailLoader ids or FUSE-safe ids.
+- Let FUSE place plain scenery, then bind service behavior from `ToolshedServiceFacilities.json`.
+- Allow alias arrays for scenery ids and span ids so service definitions can survive FUSE id renames during testing.
 - Attach a Toolshed pickable to the visible scenery root so vanilla mouse-over starts from the asset mesh and still finds a service tooltip/action.
 - Use `storageAnimations` for visible inventory, such as sampling the wood pile clip from empty to full based on `Industry.Storage`.
-- Use `particleEffects` for custom oil/diesel/solid loading effects. Bunker-C test config uses `isLoading` plus `requiredBoolKey = "request"` so flow appears only while fuel is actually transferring and the pipe is down.
+- Use `particleEffects` for custom oil/diesel/solid loading effects. Bunker-C test config uses `animateLoad` plus `requiredBoolKey = "request"` so flow follows the vanilla visible-loading state and still requires the pipe to be down.
 - Use `requireServiceCondition` for loaders that must be physically in position before transfer. The bunker-C test loader requires `request = true`, which is the pipe-down state.
 - Suppress `IndustryUnloader` delivery revenue for storage-only service facilities, so base-game payable loads such as `pulpwood` can stock an engine-service wood pile without paying the player like a normal industry delivery.
-- Keep Toolshed FUSE-optional so RailLoader-only testing can load the logic mod without FUSE installed.
+- Keep Toolshed as the single Unity Mod Manager logic mod, with FUSE data packages providing placement and operations data.
 - Keep oil/wood firing code separate in `Toolshed.OilWoodFiring`.
 
 Supported load IDs:
@@ -149,7 +149,7 @@ Key wrapper fields:
 
 ## 6. Risks
 
-- Runtime-added industry components may miss cached industry component arrays; the wrapper clears the private cache, but operations-side storage and interchange should still be authored in RailLoader/FUSE data where possible.
+- Runtime-added industry components may miss cached industry component arrays; the wrapper clears the private cache, but operations-side storage and interchange should still be authored in FUSE data where possible.
 - `purchaseDelayDays` is documented for future compatibility; vanilla interchange currently hardcodes the return delay.
 - Off-map purchase is per active interchange. To make bunker-C or pulpwood buyable from Andrews as well as Sylva/Whittier, add separate `InterchangedIndustryLoader` children under `andrews-interchange` using Andrews' own spans.
 - Water interchange is intentionally blocked.
@@ -158,8 +158,8 @@ Key wrapper fields:
 - If the separate `OilFiring` mod is also installed, oil/wood patches may run twice. Use Toolshed as the consolidated dependency and remove the old mod from active testing.
 - Wood shed metadata was corrected from `Prefabs for Hunter.unitypackage`: canonical prefab `wood-shed.prefab`, public model ID `wood-shed`, compatibility alias `wood_fuel_shedp`, and animation clip `Wood Pile`.
 - ALW tank loader spout animation now uses animation-map key `PipeTurner`. The earlier test bundle used `RotatePipe`, so the JSON binding must match the active bundle.
-- The RailLoader test pack now patches the existing base-game `dillsboro-roundhouse-ops` industry so bunker-c and wood show under Dillsboro Engine Service instead of creating a separate Dillsboro Wood Shed location.
-- Loader rates were tuned down from debug values. Current Dillsboro test values are `40` gal/s for bunker-C and `250` lb/s for pulpwood.
+- The FUSE test package patches the existing base-game `dillsboro-roundhouse-ops` industry so bunker-c and wood show under Dillsboro Engine Service instead of creating a separate Dillsboro Wood Shed location.
+- Loader rates were tuned down from debug values. Current Dillsboro test values are `6` gal/s for bunker-C and `250` lb/s for pulpwood.
 
 ## 7. Implementation Checklist
 
@@ -172,9 +172,9 @@ Key wrapper fields:
 - [x] Add optional `[ServiceFacility]` and `[ServiceFacility][Loader]` logs.
 - [x] Package ALW loader assets into Toolshed.
 - [x] Package wood shed bundle with inferred asset-pack metadata.
-- [x] Split RailLoader-facing service facility assets into a separate legacy asset-pack wrapper.
+- [x] Keep legacy placement wrappers out of the deployed Toolshed package.
 - [x] Add community setup documentation.
-- [x] Add runtime service binding for RailLoader and FUSE placed scenery.
+- [x] Add runtime service binding for FUSE placed scenery.
 - [x] Remove hard FUSE dependency from Toolshed logic.
 - [x] Add visible scenery-root service pickables for hover/action prompts.
 - [x] Add storage-percentage animation support for the wood pile.
@@ -187,8 +187,9 @@ Key wrapper fields:
 Remaining:
 
 - [ ] Validate `WoodShed` prefab identifier in-game.
-- [ ] Validate `ToolshedServiceFacilities.json` bindings in-game with RailLoader-placed assets.
+- [ ] Validate `ToolshedServiceFacilities.json` bindings in-game with FUSE-placed assets.
 - [ ] Validate the same bindings from a FUSE `world.scenery` package.
+- [ ] Receive/update ALW tank-loader prefab with the real `FuelPoint` empty at the spout tip. The FUSE test config now requires that real parent and will not show a guessed fallback stream.
 - [ ] Tune `bunker-c` `costPerUnit` later.
 - [ ] Tune wood consumption after live testing.
 
@@ -203,11 +204,6 @@ Created:
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\src\OilWoodFiring\*.cs`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\SCAssetPacks\ALWLoaders\*`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\SCAssetPacks\WoodShed\*`
-- `C:\Hrogers_Railroader_mods_Projects\Toolshed\LegacyRailLoaderAssets\Definition.json`
-- `C:\Hrogers_Railroader_mods_Projects\Toolshed\LegacyRailLoaderAssets\README.md`
-- `C:\Hrogers_Railroader_mods_Projects\Toolshed\LegacyRailLoaderTest\Definition.json`
-- `C:\Hrogers_Railroader_mods_Projects\Toolshed\LegacyRailLoaderTest\scenery.json`
-- `C:\Hrogers_Railroader_mods_Projects\Toolshed\LegacyRailLoaderTest\ToolshedServiceFacilities.json`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\FuseServiceFacilityTest\Info.json`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\FuseServiceFacilityTest\service-facility-test.fuse.json`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\FuseServiceFacilityTest\ToolshedServiceFacilities.json`
@@ -221,7 +217,6 @@ Modified:
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\src\ServiceFacilities\ServiceFacilityParticleEffectDriver.cs`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\Examples\service-facility-setup-guide.md`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\ServiceFacility_Audit.md`
-- `C:\Hrogers_Railroader_mods_Projects\Toolshed\LegacyRailLoaderTest\ToolshedServiceFacilities.json`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\FuseServiceFacilityTest\ToolshedServiceFacilities.json`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\FuseServiceFacilityTest\service-facility-test.fuse.json`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\Toolshed.csproj`
@@ -229,9 +224,8 @@ Modified:
 
 Packaging note:
 
-- Toolshed remains the single Unity Mod Manager logic mod for both RailLoader testing and FUSE release packages.
-- `Toolshed Service Facility Assets` is a temporary RailLoader/Strange Customs asset-pack wrapper for in-game placement and alignment.
-- FUSE should use Toolshed's packaged `SCAssetPacks` directly and bind the same service definitions through `ToolshedServiceFacilities.json`.
+- Toolshed remains the single Unity Mod Manager logic mod.
+- FUSE should use Toolshed's packaged `SCAssetPacks` directly and bind service definitions through `ToolshedServiceFacilities.json`.
 
 Verification:
 
@@ -248,17 +242,17 @@ For each finished service asset using explicit Unity components:
 5. Set `serviceLoadId`.
 6. Match key names between controls, sequencer, and loader.
 7. If the loader has a physical service position, set `requireServiceCondition` and point it at the key that means pipe/chute/hose down.
-8. For oil or other visible flow, add a particle object to the prefab or configure `particleEffects` to create one at runtime. Best practice for community assets is either a Railroader editor `Toolshed Flow Origin` component at the exact spout/chute tip, or a Unity prefab empty named `Toolshed_FlowOrigin` parented to the moving pipe/chute. If the Railroader editor marker does not move with the pipe, set `flowOriginFollowTransformName` in JSON so Toolshed reparents it to the animated transform at runtime; for the ALW tank loader this is usually `PipeTurner`. Use `debugOriginMarker` only while lining up the outlet, then turn it off. Use `streamLength` to adjust the visible oil fall distance, `createVisibleStream` when particle-only oil is too dark or hidden against the asset, and `requireParentTransform` when the effect should stay hidden until a real parent transform exists.
+8. For oil or other visible flow, add a particle object to the prefab or configure `particleEffects` to create one at runtime. Best practice for community assets is a normal Unity empty at the exact spout/chute tip, parented to the moving pipe/chute. Use `Toolshed_FlowOrigin` as the generic name, or list asset-specific names such as `FuelPoint`, `Chute.CoalStart`, `Chute.CoalStart.001`, or `SingleLoadChute` in JSON. Avoid custom `ToolshedFlowOrigin` component entries in FUSE-mounted asset-pack definitions because FUSE strips unsupported component kinds. Use `debugOriginMarker` only while lining up the outlet, then turn it off. Use `streamLength` to adjust the visible oil fall distance, `createVisibleStream` when particle-only oil is too dark or hidden against the asset, and `requireParentTransform` when the effect should stay hidden until a real parent transform exists.
 9. For finite storage, assign a stable `Industry` and `linkedIndustry`.
 10. Add `IndustryUnloader` for delivered storage.
 11. Add `Interchange` plus `InterchangedIndustryLoader` for off-map purchase.
 12. Assign `serviceTrackSpan` for industry/interchange car discovery.
 13. Confirm the cars/tenders being loaded have matching load slots and `CarLoadTarget` markers.
 
-For RailLoader or FUSE JSON binding:
+For FUSE JSON binding:
 
 1. Place the visible model as scenery.
-2. Define the industry, storage components, interchange components, and delivery track span in RailLoader/FUSE operations data.
+2. Define the industry, storage components, interchange components, and delivery track span in FUSE operations data.
 3. Add a `ToolshedServiceFacilities.json` entry targeting the scenery id.
 4. Set `serviceLoadId`, `sourceIndustryId`, `serviceTrackSpanId`, and animation map keys.
 5. Restart Railroader or reload the mod so UMM uses the new Toolshed DLL.
@@ -279,4 +273,4 @@ For RailLoader or FUSE JSON binding:
 - [ ] Confirm water does not configure interchange.
 - [ ] Save/reload and confirm industry storage persists.
 - [ ] Validate ALW loader model and wood shed asset identifiers in game.
-- [ ] Test once through RailLoader placement and once through FUSE `world.scenery`.
+- [ ] Test through FUSE `world.scenery`.
