@@ -52,43 +52,41 @@ namespace Toolshed.ServiceFacilities
 		private readonly List<ParticleSystem> _particleSystems = new List<ParticleSystem>();
 		private readonly List<IDisposable> _observers = new List<IDisposable>();
 		private Material _createdMaterial;
+		private Material _createdSolidMaterial;
 		private GameObject _root;
 		private GameObject _createdParticleObject;
 		private GameObject _streamObject;
+		private GameObject _streamMeshObject;
+		private GameObject _runtimeFlowOriginObject;
 		private GameObject _debugOriginObject;
 		private LineRenderer _streamRenderer;
+		private MeshRenderer _streamMeshRenderer;
 		private Transform _streamAnchor;
 		private ServiceFacilityFlowOrigin _selectedFlowOrigin;
 		private Transform _selectedFlowRoot;
+		private KeyValueObject _observedKeyValueObject;
+		private string _observedBoolKey;
+		private string _observedRequiredBoolKey;
 		private bool _usingFallbackParent;
 		private bool _loggedMissingEffect;
 		private bool _loggedMissingFlowOriginFollow;
+		private bool _loggedBlockedByFallbackParent;
+		private bool _lastShouldPlay;
+		private bool _hasLastShouldPlay;
 		private float _nextParentRetryTime;
 		private float _nextFlowOriginFollowRetryTime;
+		private float _nextResolveRetryTime;
 
 		private void OnEnable()
 		{
 			ResolveParticleSystems();
-			if (keyValueObject != null && !string.IsNullOrEmpty(boolKey))
-			{
-				_observers.Add(keyValueObject.Observe(boolKey, PropertyChanged, true));
-				if (!string.IsNullOrEmpty(requiredBoolKey) && !string.Equals(requiredBoolKey, boolKey, StringComparison.Ordinal))
-				{
-					_observers.Add(keyValueObject.Observe(requiredBoolKey, PropertyChanged, true));
-				}
-			}
+			EnsureObservers();
+			ApplyPlaybackState();
 		}
 
 		private void OnDisable()
 		{
-			for (int i = 0; i < _observers.Count; i++)
-			{
-				if (_observers[i] != null)
-				{
-					_observers[i].Dispose();
-				}
-			}
-			_observers.Clear();
+			DisposeObservers();
 			StopAll(clearOnStop);
 		}
 
@@ -99,10 +97,46 @@ namespace Toolshed.ServiceFacilities
 				Destroy(_createdMaterial);
 				_createdMaterial = null;
 			}
+			if (_createdSolidMaterial != null)
+			{
+				Destroy(_createdSolidMaterial);
+				_createdSolidMaterial = null;
+			}
+			if (_runtimeFlowOriginObject != null)
+			{
+				Destroy(_runtimeFlowOriginObject);
+				_runtimeFlowOriginObject = null;
+			}
+		}
+
+		public void RefreshBinding(GameObject root)
+		{
+			if (root != null)
+			{
+				sampleRoot = root;
+			}
+
+			EnsureObservers();
+			if (NeedsResolve())
+			{
+				ResolveParticleSystems();
+			}
+			else
+			{
+				RetryFlowOriginFollowBinding();
+				RetryParentBinding();
+			}
+			ApplyPlaybackState();
 		}
 
 		private void LateUpdate()
 		{
+			if (NeedsResolve() && Time.unscaledTime >= _nextResolveRetryTime)
+			{
+				_nextResolveRetryTime = Time.unscaledTime + 1f;
+				ResolveParticleSystems();
+				ApplyPlaybackState();
+			}
 			RetryFlowOriginFollowBinding();
 			RetryParentBinding();
 			if (_streamRenderer != null && _streamRenderer.enabled)
@@ -113,15 +147,7 @@ namespace Toolshed.ServiceFacilities
 
 		private void PropertyChanged(Value value)
 		{
-			bool shouldPlay = ShouldPlay();
-			if (shouldPlay)
-			{
-				PlayAll();
-			}
-			else
-			{
-				StopAll(clearOnStop);
-			}
+			ApplyPlaybackState();
 		}
 
 		private bool ShouldPlay()
@@ -151,6 +177,7 @@ namespace Toolshed.ServiceFacilities
 			_particleSystems.Clear();
 			GameObject root = sampleRoot != null ? sampleRoot : gameObject;
 			_root = root;
+			_usingFallbackParent = false;
 			foreach (string candidateName in CandidateNames())
 			{
 				Transform match = FindChildByName(root.transform, candidateName);
@@ -159,6 +186,18 @@ namespace Toolshed.ServiceFacilities
 					continue;
 				}
 				AddParticleSystems(match.gameObject);
+			}
+			if (_createdParticleObject != null)
+			{
+				bool usedFallback;
+				Transform parent = ResolveParent(root, out usedFallback);
+				_usingFallbackParent |= usedFallback;
+				_createdParticleObject.transform.SetParent(parent, false);
+				ApplyLayerFromParent(_createdParticleObject, parent);
+				_createdParticleObject.transform.localPosition = LocalPositionForParent(parent);
+				_createdParticleObject.transform.localRotation = Quaternion.Euler(localEuler);
+				_createdParticleObject.transform.localScale = localScale == Vector3.zero ? Vector3.one : localScale;
+				AddParticleSystems(_createdParticleObject);
 			}
 
 			if (_particleSystems.Count == 0 && createIfMissing)
@@ -184,6 +223,101 @@ namespace Toolshed.ServiceFacilities
 				_loggedMissingEffect = true;
 				Main.Warn("[ServiceFacility][Loader] particle effect '" + EffectDescription + "' was not found under " + root.name);
 			}
+		}
+
+		private bool NeedsResolve()
+		{
+			GameObject root = sampleRoot != null ? sampleRoot : gameObject;
+			if (_root != root)
+			{
+				return true;
+			}
+			if (createVisibleStream && (_streamObject == null || _streamRenderer == null))
+			{
+				return true;
+			}
+			if (createVisibleStream && (_streamMeshObject == null || _streamMeshRenderer == null))
+			{
+				return true;
+			}
+			if (createIfMissing && _createdParticleObject == null && _particleSystems.Count == 0)
+			{
+				return true;
+			}
+			for (int i = 0; i < _particleSystems.Count; i++)
+			{
+				if (_particleSystems[i] == null)
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
+		private void ApplyPlaybackState()
+		{
+			bool shouldPlay = ShouldPlay();
+			LogPlaybackStateIfChanged(shouldPlay);
+			if (shouldPlay)
+			{
+				PlayAll();
+			}
+			else
+			{
+				StopAll(clearOnStop);
+			}
+		}
+
+		private void EnsureObservers()
+		{
+			if (!isActiveAndEnabled)
+			{
+				return;
+			}
+
+			string primaryKey = boolKey ?? "";
+			string secondaryKey = "";
+			if (!string.IsNullOrEmpty(requiredBoolKey) && !string.Equals(requiredBoolKey, primaryKey, StringComparison.Ordinal))
+			{
+				secondaryKey = requiredBoolKey;
+			}
+
+			if (_observedKeyValueObject == keyValueObject &&
+				string.Equals(_observedBoolKey, primaryKey, StringComparison.Ordinal) &&
+				string.Equals(_observedRequiredBoolKey, secondaryKey, StringComparison.Ordinal))
+			{
+				return;
+			}
+
+			DisposeObservers();
+			if (keyValueObject == null || string.IsNullOrEmpty(primaryKey))
+			{
+				return;
+			}
+
+			_observedKeyValueObject = keyValueObject;
+			_observedBoolKey = primaryKey;
+			_observedRequiredBoolKey = secondaryKey;
+			_observers.Add(keyValueObject.Observe(primaryKey, PropertyChanged, true));
+			if (!string.IsNullOrEmpty(secondaryKey))
+			{
+				_observers.Add(keyValueObject.Observe(secondaryKey, PropertyChanged, true));
+			}
+		}
+
+		private void DisposeObservers()
+		{
+			for (int i = 0; i < _observers.Count; i++)
+			{
+				if (_observers[i] != null)
+				{
+					_observers[i].Dispose();
+				}
+			}
+			_observers.Clear();
+			_observedKeyValueObject = null;
+			_observedBoolKey = null;
+			_observedRequiredBoolKey = null;
 		}
 
 		private IEnumerable<string> CandidateNames()
@@ -229,14 +363,17 @@ namespace Toolshed.ServiceFacilities
 			Transform parent = ResolveParent(root, out usedFallback);
 			_usingFallbackParent |= usedFallback;
 
-			GameObject effectObject = new GameObject("Toolshed Oil Flow");
-			_createdParticleObject = effectObject;
-			effectObject.transform.SetParent(parent, false);
-			effectObject.transform.localPosition = localPosition;
-			effectObject.transform.localRotation = Quaternion.Euler(localEuler);
-			effectObject.transform.localScale = localScale == Vector3.zero ? Vector3.one : localScale;
-			EnsureDebugOriginMarker(effectObject.transform);
-			return effectObject.AddComponent<ParticleSystem>();
+			if (_createdParticleObject == null)
+			{
+				_createdParticleObject = new GameObject("Toolshed Oil Flow");
+			}
+			_createdParticleObject.transform.SetParent(parent, false);
+			ApplyLayerFromParent(_createdParticleObject, parent);
+			_createdParticleObject.transform.localPosition = LocalPositionForParent(parent);
+			_createdParticleObject.transform.localRotation = Quaternion.Euler(localEuler);
+			_createdParticleObject.transform.localScale = localScale == Vector3.zero ? Vector3.one : localScale;
+			EnsureDebugOriginMarker(_createdParticleObject.transform);
+			return _createdParticleObject.GetComponent<ParticleSystem>() ?? _createdParticleObject.AddComponent<ParticleSystem>();
 		}
 
 		private void EnsureVisibleStream(GameObject root)
@@ -245,16 +382,21 @@ namespace Toolshed.ServiceFacilities
 			Transform parent = ResolveParent(root, out usedFallback);
 			_usingFallbackParent |= usedFallback;
 
-			_streamAnchor = parent;
-			_streamObject = new GameObject("Toolshed Oil Stream");
+			bool created = false;
+			if (_streamObject == null)
+			{
+				_streamObject = new GameObject("Toolshed Oil Stream");
+				created = true;
+			}
 			_streamObject.transform.SetParent(parent, false);
-			_streamObject.transform.localPosition = localPosition;
+			ApplyLayerFromParent(_streamObject, parent);
+			_streamObject.transform.localPosition = LocalPositionForParent(parent);
 			_streamObject.transform.localRotation = Quaternion.Euler(localEuler);
 			_streamObject.transform.localScale = Vector3.one;
 			_streamAnchor = _streamObject.transform;
 			EnsureDebugOriginMarker(_streamObject.transform);
 
-			_streamRenderer = _streamObject.AddComponent<LineRenderer>();
+			_streamRenderer = _streamObject.GetComponent<LineRenderer>() ?? _streamObject.AddComponent<LineRenderer>();
 			_streamRenderer.positionCount = 2;
 			_streamRenderer.useWorldSpace = streamUsesWorldDown;
 			_streamRenderer.startWidth = Mathf.Max(0.001f, streamWidth);
@@ -269,8 +411,9 @@ namespace Toolshed.ServiceFacilities
 			_streamRenderer.endColor = streamColor;
 			UpdateStreamPositions();
 			_streamRenderer.enabled = false;
+			EnsureVisibleStreamMesh(parent);
 
-			if (debugLogging)
+			if (debugLogging && created)
 			{
 				Main.Log("[ServiceFacility][Loader] visible stream created anchor=" + parent.name +
 					", worldDown=" + streamUsesWorldDown +
@@ -278,6 +421,35 @@ namespace Toolshed.ServiceFacilities
 					", width=" + streamWidth.ToString("0.###") +
 					", length=" + streamLength.ToString("0.###"));
 			}
+		}
+
+		private void EnsureVisibleStreamMesh(Transform parent)
+		{
+			if (parent == null)
+			{
+				return;
+			}
+			if (_streamMeshObject == null)
+			{
+				_streamMeshObject = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+				_streamMeshObject.name = "Toolshed Oil Stream Mesh";
+				Collider collider = _streamMeshObject.GetComponent<Collider>();
+				if (collider != null)
+				{
+					Destroy(collider);
+				}
+			}
+			_streamMeshObject.transform.SetParent(parent, false);
+			ApplyLayerFromParent(_streamMeshObject, parent);
+			_streamMeshRenderer = _streamMeshObject.GetComponent<MeshRenderer>();
+			if (_streamMeshRenderer != null)
+			{
+				_streamMeshRenderer.material = CreateSolidStreamMaterial();
+				_streamMeshRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+				_streamMeshRenderer.receiveShadows = false;
+			}
+			_streamMeshObject.SetActive(false);
+			UpdateStreamPositions();
 		}
 
 		private void ConfigureParticleSystem(ParticleSystem particleSystem)
@@ -329,6 +501,7 @@ namespace Toolshed.ServiceFacilities
 			_debugOriginObject = GameObject.CreatePrimitive(PrimitiveType.Sphere);
 			_debugOriginObject.name = "Toolshed Oil Flow Debug Origin";
 			_debugOriginObject.transform.SetParent(parent, false);
+			ApplyLayerFromParent(_debugOriginObject, parent);
 			_debugOriginObject.transform.localPosition = Vector3.zero;
 			_debugOriginObject.transform.localRotation = Quaternion.identity;
 			_debugOriginObject.transform.localScale = new Vector3(0.12f, 0.12f, 0.12f);
@@ -379,6 +552,35 @@ namespace Toolshed.ServiceFacilities
 			return _createdMaterial;
 		}
 
+		private Material CreateSolidStreamMaterial()
+		{
+			if (_createdSolidMaterial != null)
+			{
+				return _createdSolidMaterial;
+			}
+
+			Shader shader = Shader.Find("Unlit/Color");
+			if (shader == null)
+			{
+				shader = Shader.Find("Standard");
+			}
+			if (shader == null)
+			{
+				shader = Shader.Find("Sprites/Default");
+			}
+			if (shader == null)
+			{
+				return CreateParticleMaterial();
+			}
+
+			_createdSolidMaterial = new Material(shader);
+			_createdSolidMaterial.color = streamColor;
+			SetMaterialColorIfPresent(_createdSolidMaterial, "_BaseColor", streamColor);
+			SetMaterialColorIfPresent(_createdSolidMaterial, "_Color", streamColor);
+			SetMaterialColorIfPresent(_createdSolidMaterial, "_TintColor", streamColor);
+			return _createdSolidMaterial;
+		}
+
 		private Transform ResolveParent(GameObject root, out bool usedFallback)
 		{
 			Transform fallback = root != null ? root.transform : transform;
@@ -404,8 +606,26 @@ namespace Toolshed.ServiceFacilities
 				if (match != null)
 				{
 					usedFallback = false;
+					if (debugLogging)
+					{
+						Main.Log("[ServiceFacility][Loader] particle parent using configured flow origin " +
+							match.name + " under " + fallback.name + ".");
+					}
 					return match;
 				}
+			}
+
+			Transform followParent = FindFlowOriginFollowTransform(fallback);
+			if (followParent != null)
+			{
+				Transform runtimeOrigin = EnsureRuntimeFlowOrigin(followParent);
+				usedFallback = false;
+				if (debugLogging)
+				{
+					Main.Log("[ServiceFacility][Loader] particle parent using runtime flow origin under animated transform " +
+						followParent.name + " because no configured flow origin marker was found.");
+				}
+				return runtimeOrigin;
 			}
 
 			if (debugLogging && (!string.IsNullOrWhiteSpace(parentTransformName) || parentTransformNames != null && parentTransformNames.Length > 0))
@@ -461,6 +681,22 @@ namespace Toolshed.ServiceFacilities
 				}
 				return;
 			}
+			Transform followParent = FindFlowOriginFollowTransform(_root.transform);
+			if (followParent != null)
+			{
+				Transform runtimeOrigin = EnsureRuntimeFlowOrigin(followParent);
+				RebindCreatedEffects(runtimeOrigin);
+				_usingFallbackParent = false;
+				if (debugLogging)
+				{
+					Main.Log("[ServiceFacility][Loader] particle parent rebound to runtime flow origin under animated transform " + followParent.name + " under " + _root.name);
+				}
+				if (ShouldPlay())
+				{
+					PlayAll();
+				}
+				return;
+			}
 		}
 
 		private void RetryFlowOriginFollowBinding()
@@ -503,15 +739,7 @@ namespace Toolshed.ServiceFacilities
 				return;
 			}
 
-			Transform followTransform = null;
-			foreach (string candidateName in FlowOriginFollowCandidateNames())
-			{
-				followTransform = FindChildByName(root, candidateName);
-				if (followTransform != null)
-				{
-					break;
-				}
-			}
+			Transform followTransform = FindFlowOriginFollowTransform(root);
 			if (followTransform == null)
 			{
 				if (debugLogging && !_loggedMissingFlowOriginFollow)
@@ -539,6 +767,23 @@ namespace Toolshed.ServiceFacilities
 			UpdateStreamPositions();
 		}
 
+		private Transform FindFlowOriginFollowTransform(Transform root)
+		{
+			if (root == null || !HasFlowOriginFollowCandidates())
+			{
+				return null;
+			}
+			foreach (string candidateName in FlowOriginFollowCandidateNames())
+			{
+				Transform followTransform = FindChildByName(root, candidateName);
+				if (followTransform != null)
+				{
+					return followTransform;
+				}
+			}
+			return null;
+		}
+
 		private bool MatchesFlowOriginId(string candidate)
 		{
 			return string.IsNullOrWhiteSpace(flowOriginId) ||
@@ -554,14 +799,16 @@ namespace Toolshed.ServiceFacilities
 			if (_createdParticleObject != null)
 			{
 				_createdParticleObject.transform.SetParent(parent, false);
-				_createdParticleObject.transform.localPosition = localPosition;
+				ApplyLayerFromParent(_createdParticleObject, parent);
+				_createdParticleObject.transform.localPosition = LocalPositionForParent(parent);
 				_createdParticleObject.transform.localRotation = Quaternion.Euler(localEuler);
 				_createdParticleObject.transform.localScale = localScale == Vector3.zero ? Vector3.one : localScale;
 			}
 			if (_streamObject != null)
 			{
 				_streamObject.transform.SetParent(parent, false);
-				_streamObject.transform.localPosition = localPosition;
+				ApplyLayerFromParent(_streamObject, parent);
+				_streamObject.transform.localPosition = LocalPositionForParent(parent);
 				_streamObject.transform.localRotation = Quaternion.Euler(localEuler);
 				_streamObject.transform.localScale = Vector3.one;
 				_streamAnchor = _streamObject.transform;
@@ -570,7 +817,70 @@ namespace Toolshed.ServiceFacilities
 			{
 				_streamAnchor = parent;
 			}
+			if (_streamMeshObject != null)
+			{
+				_streamMeshObject.transform.SetParent(parent, false);
+				ApplyLayerFromParent(_streamMeshObject, parent);
+			}
 			UpdateStreamPositions();
+		}
+
+		private Vector3 LocalPositionForParent(Transform parent)
+		{
+			return parent != null && ShouldUseZeroLocalOffset(parent)
+				? Vector3.zero
+				: localPosition;
+		}
+
+		private bool ShouldUseZeroLocalOffset(Transform parent)
+		{
+			if (parent == null)
+			{
+				return false;
+			}
+			if (parent.GetComponent<ServiceFacilityFlowOrigin>() != null)
+			{
+				return true;
+			}
+			if (_runtimeFlowOriginObject != null && parent == _runtimeFlowOriginObject.transform)
+			{
+				return true;
+			}
+			foreach (string candidateName in ParentCandidateNames())
+			{
+				if (string.Equals(parent.name, candidateName, StringComparison.OrdinalIgnoreCase))
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
+		private Transform EnsureRuntimeFlowOrigin(Transform followParent)
+		{
+			if (followParent == null)
+			{
+				return null;
+			}
+			if (_runtimeFlowOriginObject == null)
+			{
+				_runtimeFlowOriginObject = new GameObject("Toolshed Runtime Flow Origin");
+			}
+			_runtimeFlowOriginObject.transform.SetParent(followParent, false);
+			ApplyLayerFromParent(_runtimeFlowOriginObject, followParent);
+			_runtimeFlowOriginObject.transform.localPosition = localPosition;
+			_runtimeFlowOriginObject.transform.localRotation = Quaternion.identity;
+			_runtimeFlowOriginObject.transform.localScale = Vector3.one;
+			return _runtimeFlowOriginObject.transform;
+		}
+
+		private static void ApplyLayerFromParent(GameObject child, Transform parent)
+		{
+			if (child == null || parent == null)
+			{
+				return;
+			}
+			child.layer = parent.gameObject.layer;
 		}
 
 		private IEnumerable<string> ParentCandidateNames()
@@ -642,33 +952,125 @@ namespace Toolshed.ServiceFacilities
 
 		private void UpdateStreamPositions()
 		{
-			if (_streamRenderer == null)
+			if (_streamRenderer == null && _streamMeshObject == null)
 			{
 				return;
 			}
+			Vector3 start;
+			Vector3 end;
 			if (streamUsesWorldDown)
 			{
 				Transform anchor = _streamAnchor != null ? _streamAnchor : transform;
-				Vector3 start = anchor.TransformPoint(streamLocalStart);
+				start = anchor.TransformPoint(streamLocalStart);
+				end = start + Vector3.down * Mathf.Max(0.01f, streamLength);
+			}
+			else
+			{
+				start = streamLocalStart;
+				end = streamLocalEnd;
+			}
+
+			if (_streamRenderer != null)
+			{
 				_streamRenderer.SetPosition(0, start);
-				_streamRenderer.SetPosition(1, start + Vector3.down * Mathf.Max(0.01f, streamLength));
+				_streamRenderer.SetPosition(1, end);
+			}
+
+			UpdateStreamMesh(start, end);
+		}
+
+		private void UpdateStreamMesh(Vector3 start, Vector3 end)
+		{
+			if (_streamMeshObject == null)
+			{
+				return;
+			}
+			Vector3 direction = end - start;
+			float length = Mathf.Max(0.01f, direction.magnitude);
+			if (length <= 0.01f)
+			{
+				direction = Vector3.down;
+			}
+			else
+			{
+				direction /= length;
+			}
+
+			if (streamUsesWorldDown)
+			{
+				_streamMeshObject.transform.position = start + direction * (length * 0.5f);
+				_streamMeshObject.transform.rotation = Quaternion.FromToRotation(Vector3.up, direction);
+			}
+			else
+			{
+				_streamMeshObject.transform.localPosition = start + direction * (length * 0.5f);
+				_streamMeshObject.transform.localRotation = Quaternion.FromToRotation(Vector3.up, direction);
+			}
+			_streamMeshObject.transform.localScale = new Vector3(
+				Mathf.Max(0.001f, streamWidth),
+				length * 0.5f,
+				Mathf.Max(0.001f, streamWidth));
+		}
+
+		private void LogPlaybackStateIfChanged(bool shouldPlay)
+		{
+			if (!debugLogging)
+			{
+				return;
+			}
+			if (_hasLastShouldPlay && _lastShouldPlay == shouldPlay)
+			{
 				return;
 			}
 
-			_streamRenderer.SetPosition(0, streamLocalStart);
-			_streamRenderer.SetPosition(1, streamLocalEnd);
+			_hasLastShouldPlay = true;
+			_lastShouldPlay = shouldPlay;
+			Main.Log("[ServiceFacility][Loader] particle state key=" + boolKey + "=" + BoolValueText(boolKey) +
+				", required=" + (string.IsNullOrEmpty(requiredBoolKey) ? "<none>" : requiredBoolKey + "=" + BoolValueText(requiredBoolKey)) +
+				", play=" + shouldPlay +
+				", fallbackParent=" + _usingFallbackParent +
+				", anchor=" + (_streamAnchor != null ? _streamAnchor.name : "<none>") +
+				", stream=" + (_streamRenderer != null ? "ready" : "missing") +
+				", mesh=" + (_streamMeshObject != null ? "ready" : "missing") +
+				", streamPosition=" + StreamPositionText());
+		}
+
+		private string StreamPositionText()
+		{
+			Transform anchor = _streamAnchor != null ? _streamAnchor : (_streamMeshObject != null ? _streamMeshObject.transform : null);
+			return anchor != null ? anchor.position.ToString() : "<none>";
+		}
+
+		private string BoolValueText(string key)
+		{
+			if (keyValueObject == null || string.IsNullOrEmpty(key))
+			{
+				return "<missing>";
+			}
+			return keyValueObject[key].BoolValue ? "true" : "false";
 		}
 
 		private void PlayAll()
 		{
 			if (requireParentTransform && _usingFallbackParent)
 			{
+				if (debugLogging && !_loggedBlockedByFallbackParent)
+				{
+					_loggedBlockedByFallbackParent = true;
+					Main.Warn("[ServiceFacility][Loader] particle play blocked until a configured parent transform is available.");
+				}
 				return;
 			}
+			_loggedBlockedByFallbackParent = false;
 			if (_streamRenderer != null)
 			{
 				UpdateStreamPositions();
 				_streamRenderer.enabled = true;
+			}
+			if (_streamMeshObject != null)
+			{
+				UpdateStreamPositions();
+				_streamMeshObject.SetActive(true);
 			}
 			for (int i = 0; i < _particleSystems.Count; i++)
 			{
@@ -685,6 +1087,10 @@ namespace Toolshed.ServiceFacilities
 			if (_streamRenderer != null)
 			{
 				_streamRenderer.enabled = false;
+			}
+			if (_streamMeshObject != null)
+			{
+				_streamMeshObject.SetActive(false);
 			}
 			ParticleSystemStopBehavior stopBehavior = clear ? ParticleSystemStopBehavior.StopEmittingAndClear : ParticleSystemStopBehavior.StopEmitting;
 			for (int i = 0; i < _particleSystems.Count; i++)

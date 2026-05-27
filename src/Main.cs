@@ -2,6 +2,7 @@ using UnityEngine;
 using UnityModManagerNet;
 using HarmonyLib;
 using Toolshed.OilWoodFiring;
+using Toolshed.SelectiveInterchanges;
 using Toolshed.ServiceFacilities;
 
 namespace Toolshed
@@ -26,8 +27,9 @@ namespace Toolshed
             _harmony = new Harmony(modEntry.Info.Id);
             _harmony.PatchAll();
             OilWoodFiringRuntime.Initialize();
+            SelectiveInterchangeRuntime.Initialize();
             ServiceFacilityRuntime.Initialize();
-            Log("Loaded. Toolshed components are available to RailLoader and FUSE packages.");
+            Log("Loaded. Toolshed components are available to FUSE packages.");
             return true;
         }
 
@@ -42,6 +44,7 @@ namespace Toolshed
         private static void OnUpdate(UnityModManager.ModEntry modEntry, float deltaTime)
         {
             OilWoodFiringRuntime.Update();
+            SelectiveInterchangeRuntime.Update();
             ServiceFacilityRuntime.Update();
         }
 
@@ -81,6 +84,7 @@ namespace Toolshed
         private static bool OnUnload(UnityModManager.ModEntry modEntry)
         {
             OilWoodFiringRuntime.Unload();
+            SelectiveInterchangeRuntime.Unload();
             ServiceFacilityRuntime.Unload();
             if (_harmony != null)
             {

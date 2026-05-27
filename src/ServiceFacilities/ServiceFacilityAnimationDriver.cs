@@ -10,7 +10,7 @@ namespace Toolshed.ServiceFacilities
 	/// <summary>
 	/// Small runtime animation bridge for service scenery assets.
 	/// Railroader's built-in KeyValueBoolAnimator expects its AnimationClip before Awake runs,
-	/// which is awkward when Toolshed is attaching components after a RailLoader/FUSE asset has
+	/// which is awkward when Toolshed is attaching components after a FUSE asset has
 	/// already spawned. This driver samples the clip directly from the asset's AnimationMap.
 	/// </summary>
 	[DisallowMultipleComponent]
@@ -27,6 +27,7 @@ namespace Toolshed.ServiceFacilities
 		public bool useTransformFallback;
 		public string fallbackTransformName;
 		public string[] fallbackTransformNames;
+		internal ServiceFacilityAnimationFallbackTransformDefinition[] fallbackTransformOverrides;
 		public Vector3 fallbackInactiveLocalEuler;
 		public Vector3 fallbackActiveLocalEuler;
 		public float fallbackDurationSeconds;
@@ -43,6 +44,7 @@ namespace Toolshed.ServiceFacilities
 		private float _movementProbeLogTime;
 		private bool _movementProbeActive;
 		private Transform _fallbackTransform;
+		private ServiceFacilityAnimationFallbackTransformDefinition _fallbackTransformOverride;
 		private float _fallbackProgress;
 		private bool _fallbackLogged;
 		private float _nextBindingRefreshTime;
@@ -81,6 +83,7 @@ namespace Toolshed.ServiceFacilities
 			_resolveFailed = false;
 			_playableFailed = false;
 			_fallbackTransform = null;
+			_fallbackTransformOverride = null;
 			_fallbackLogged = false;
 			_movementProbeSnapshot = null;
 			_nextBindingRefreshTime = 0f;
@@ -210,6 +213,7 @@ namespace Toolshed.ServiceFacilities
 						", root=" + sampleRoot.name);
 				}
 				_fallbackTransform = null;
+				_fallbackTransformOverride = null;
 				_fallbackLogged = false;
 			}
 		}
@@ -313,8 +317,10 @@ namespace Toolshed.ServiceFacilities
 			float duration = FallbackDuration();
 			float target = active ? 1f : 0f;
 			_fallbackProgress = Mathf.MoveTowards(_fallbackProgress, target, Mathf.Max(speed, 0.01f) * Time.deltaTime / duration);
-			Quaternion inactive = Quaternion.Euler(fallbackInactiveLocalEuler);
-			Quaternion activeRotation = Quaternion.Euler(fallbackActiveLocalEuler);
+			Vector3 inactiveEuler = EffectiveFallbackInactiveLocalEuler();
+			Vector3 activeEuler = EffectiveFallbackActiveLocalEuler();
+			Quaternion inactive = Quaternion.Euler(inactiveEuler);
+			Quaternion activeRotation = Quaternion.Euler(activeEuler);
 			ApplyFallbackRotation(inactive, activeRotation);
 			_time = _fallbackProgress * duration;
 
@@ -323,8 +329,8 @@ namespace Toolshed.ServiceFacilities
 				_fallbackLogged = true;
 				Main.Log("[ServiceFacility][Loader] animation transform fallback bound mapKey=" + animationMapKey +
 					", transform=" + _fallbackTransform.name +
-					", inactiveEuler=" + fallbackInactiveLocalEuler +
-					", activeEuler=" + fallbackActiveLocalEuler);
+					", inactiveEuler=" + inactiveEuler +
+					", activeEuler=" + activeEuler);
 			}
 			return true;
 		}
@@ -359,7 +365,7 @@ namespace Toolshed.ServiceFacilities
 			{
 				return;
 			}
-			ApplyFallbackRotation(Quaternion.Euler(fallbackInactiveLocalEuler), Quaternion.Euler(fallbackActiveLocalEuler));
+			ApplyFallbackRotation(Quaternion.Euler(EffectiveFallbackInactiveLocalEuler()), Quaternion.Euler(EffectiveFallbackActiveLocalEuler()));
 		}
 
 		private void ApplyFallbackRotation(Quaternion inactive, Quaternion activeRotation)
@@ -389,6 +395,7 @@ namespace Toolshed.ServiceFacilities
 					Transform transform = transforms[i];
 					if (transform != null && string.Equals(transform.name, candidateName, StringComparison.OrdinalIgnoreCase))
 					{
+						_fallbackTransformOverride = FindFallbackTransformOverride(candidateName);
 						return transform;
 					}
 				}
@@ -397,6 +404,34 @@ namespace Toolshed.ServiceFacilities
 			if (debugLogging)
 			{
 				Main.Warn("[ServiceFacility][Loader] animation transform fallback '" + string.Join(", ", names) + "' not found under " + (root != null ? root.name : "<null>"));
+			}
+			return null;
+		}
+
+		private Vector3 EffectiveFallbackInactiveLocalEuler()
+		{
+			return _fallbackTransformOverride != null ? _fallbackTransformOverride.inactiveLocalEuler : fallbackInactiveLocalEuler;
+		}
+
+		private Vector3 EffectiveFallbackActiveLocalEuler()
+		{
+			return _fallbackTransformOverride != null ? _fallbackTransformOverride.activeLocalEuler : fallbackActiveLocalEuler;
+		}
+
+		private ServiceFacilityAnimationFallbackTransformDefinition FindFallbackTransformOverride(string transformName)
+		{
+			if (fallbackTransformOverrides == null || string.IsNullOrWhiteSpace(transformName))
+			{
+				return null;
+			}
+
+			for (int i = 0; i < fallbackTransformOverrides.Length; i++)
+			{
+				ServiceFacilityAnimationFallbackTransformDefinition candidate = fallbackTransformOverrides[i];
+				if (candidate != null && candidate.Matches(transformName))
+				{
+					return candidate;
+				}
 			}
 			return null;
 		}

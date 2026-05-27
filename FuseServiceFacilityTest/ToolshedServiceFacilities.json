@@ -44,6 +44,21 @@
             "PipeTunrner",
             "RotatePipe"
           ],
+          "fallbackTransformOverrides": [
+            {
+              "transformName": "RotatePipe",
+              "inactiveLocalEuler": {
+                "x": 0.0,
+                "y": 80.0,
+                "z": 0.0
+              },
+              "activeLocalEuler": {
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0
+              }
+            }
+          ],
           "fallbackDurationSeconds": 1.25,
           "fallbackInactiveLocalEuler": {
             "x": 0.0,
@@ -59,19 +74,14 @@
       ],
       "particleEffects": [
         {
-          "boolKey": "isLoading",
+          "boolKey": "animateLoad",
           "requiredBoolKey": "request",
           "requiredBoolExpectedValue": true,
           "createIfMissing": true,
           "requireParentTransform": true,
-          "flowOriginFollowTransformName": "PipeTurner",
-          "flowOriginFollowTransformNames": [
-            "PipeTurner",
-            "RotatePipe"
-          ],
-          "flowOriginFollowPreserveWorldPosition": true,
-          "parentTransformName": "Toolshed_FlowOrigin",
+          "parentTransformName": "FuelPoint",
           "parentTransformNames": [
+            "FuelPoint",
             "Toolshed_FlowOrigin",
             "OilFlowOrigin",
             "FlowOrigin",
@@ -108,14 +118,14 @@
             "z": 0.0
           },
           "streamLength": 0.62,
-          "streamWidth": 0.04,
+          "streamWidth": 0.055,
           "streamColor": {
             "r": 0.16,
             "g": 0.09,
             "b": 0.035,
-            "a": 0.9
+            "a": 1.0
           },
-          "debugOriginMarker": true,
+          "debugOriginMarker": false,
           "clearOnStop": true
         }
       ]

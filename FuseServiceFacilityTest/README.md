@@ -1,8 +1,8 @@
 # Toolshed Service Facility Test (FUSE)
 
-FUSE equivalent of the temporary RailLoader service-facility test pack.
+FUSE service-facility test package for Toolshed.
 
-Use this when switching from RailLoader placement testing to FUSE validation. It places the same Dillsboro bunker-c loader and wood shed with FUSE `world.scenery`, creates the same storage/interchange operations, and uses the same `ToolshedServiceFacilities.json` runtime service binding.
+It places the Dillsboro bunker-c loader and wood shed with FUSE `world.scenery`, creates the storage/interchange operations, and uses `ToolshedServiceFacilities.json` for runtime service binding.
 
 Expected installed layout:
 
@@ -18,4 +18,4 @@ Railroader/Mods/Toolshed Service Facility Test (FUSE)/ToolshedServiceFacilities.
 
 The FUSE test pack's `Info.json` only declares `FUSE` as a dependency because FUSE package ordering can only target FUSE data packages. `Toolshed` is still required as the runtime module: it supplies the loader logic, fuel patches, animation binding, and bundled `SCAssetPacks`.
 
-Do not install this FUSE test pack at the same time as the RailLoader test pack unless you intentionally want duplicate test scenery and duplicate test operations. The production pattern is the same for both: the authoring system places scenery and operations, and Toolshed adds the loader behavior.
+Production pattern: FUSE places scenery and operations, and Toolshed adds the loader behavior.

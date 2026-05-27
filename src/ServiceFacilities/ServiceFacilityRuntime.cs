@@ -20,8 +20,8 @@ using UnityModManagerNet;
 namespace Toolshed.ServiceFacilities
 {
 	/// <summary>
-	/// Data-driven bridge used by both RailLoader-era test packs and FUSE packages.
-	/// A pack places normal scenery and declares a small ToolshedServiceFacilities.json file;
+	/// Data-driven bridge used by FUSE packages.
+	/// A package places normal scenery and declares a small ToolshedServiceFacilities.json file;
 	/// this runtime attaches the vanilla Railroader loader components to the placed scenery.
 	/// </summary>
 	internal static class ServiceFacilityRuntime
@@ -305,8 +305,18 @@ namespace Toolshed.ServiceFacilities
 			else if (existing != null)
 			{
 				GameObject existingTarget = existing.transform.parent != null ? existing.transform.parent.gameObject : existing.gameObject;
+				Load resolvedLoad = ResolveLoad(definition.serviceLoadId);
+				bool resolvedUsesInfiniteSupply = definition.UsesInfiniteSupply;
+				Industry resolvedIndustry = resolvedUsesInfiniteSupply ? null : ResolveIndustry(definition);
+				TrackSpan resolvedSpan = ResolveTrackSpan(definition);
+				if (resolvedLoad != null && (resolvedUsesInfiniteSupply || resolvedIndustry != null))
+				{
+					PlaceServiceRoot(existing.gameObject, definition, resolvedSpan);
+					ConfigureRuntimeObject(existing.gameObject, existingTarget, id, definition, resolvedIndustry, resolvedSpan, resolvedLoad);
+					existing.Configure();
+				}
 				EnsureAnimations(definition, existing.gameObject, existingTarget);
-				EnsureStorageAnimations(definition, existing.gameObject, existingTarget, existing.linkedIndustry, ResolveLoad(definition.serviceLoadId));
+				EnsureStorageAnimations(definition, existing.gameObject, existingTarget, existing.linkedIndustry, resolvedLoad);
 				EnsureParticleEffects(definition, existing.gameObject, existingTarget);
 				return;
 			}
@@ -554,6 +564,7 @@ namespace Toolshed.ServiceFacilities
 				driver.useTransformFallback = animation.useTransformFallback;
 				driver.fallbackTransformName = animation.fallbackTransformName;
 				driver.fallbackTransformNames = animation.fallbackTransformNames;
+				driver.fallbackTransformOverrides = animation.fallbackTransformOverrides;
 				driver.fallbackInactiveLocalEuler = animation.fallbackInactiveLocalEuler;
 				driver.fallbackActiveLocalEuler = animation.fallbackActiveLocalEuler;
 				driver.fallbackDurationSeconds = animation.fallbackDurationSeconds;
@@ -651,16 +662,18 @@ namespace Toolshed.ServiceFacilities
 				}
 
 				string boolKey = string.IsNullOrWhiteSpace(effect.boolKey) ? "isLoading" : effect.boolKey;
-				string id = definition.EffectiveId + ":particle:" + effect.EffectiveName + ":" + boolKey;
-				if (AnimationBound.Contains(id))
+				string driverName = "Toolshed Particle Effect - " + effect.EffectiveName;
+				ServiceFacilityParticleEffectDriver driver = serviceRoot.GetComponentsInChildren<ServiceFacilityParticleEffectDriver>(true)
+					.FirstOrDefault(item => item != null &&
+						string.Equals(item.gameObject.name, driverName, StringComparison.OrdinalIgnoreCase) &&
+						string.Equals(item.boolKey, boolKey, StringComparison.OrdinalIgnoreCase));
+				if (driver == null)
 				{
-					continue;
+					GameObject driverObject = new GameObject(driverName);
+					driverObject.SetActive(false);
+					driverObject.transform.SetParent(serviceRoot.transform, false);
+					driver = driverObject.AddComponent<ServiceFacilityParticleEffectDriver>();
 				}
-
-				GameObject driverObject = new GameObject("Toolshed Particle Effect - " + effect.EffectiveName);
-				driverObject.SetActive(false);
-				driverObject.transform.SetParent(serviceRoot.transform, false);
-				ServiceFacilityParticleEffectDriver driver = driverObject.AddComponent<ServiceFacilityParticleEffectDriver>();
 				driver.keyValueObject = keyValue;
 				driver.boolKey = boolKey;
 				driver.sampleRoot = target;
@@ -697,8 +710,8 @@ namespace Toolshed.ServiceFacilities
 				driver.debugOriginMarker = effect.debugOriginMarker;
 				driver.clearOnStop = effect.clearOnStop;
 				driver.debugLogging = definition.debugLogging;
-				driverObject.SetActive(true);
-				AnimationBound.Add(id);
+				driver.gameObject.SetActive(true);
+				driver.RefreshBinding(target);
 			}
 		}
 
@@ -948,9 +961,43 @@ namespace Toolshed.ServiceFacilities
 		public bool useTransformFallback;
 		public string fallbackTransformName;
 		public string[] fallbackTransformNames;
+		public ServiceFacilityAnimationFallbackTransformDefinition[] fallbackTransformOverrides;
 		public Vector3 fallbackInactiveLocalEuler;
 		public Vector3 fallbackActiveLocalEuler;
 		public float fallbackDurationSeconds;
+	}
+
+	[Serializable]
+	internal sealed class ServiceFacilityAnimationFallbackTransformDefinition
+	{
+		public string transformName;
+		public string[] transformNames;
+		public Vector3 inactiveLocalEuler;
+		public Vector3 activeLocalEuler;
+
+		public bool Matches(string name)
+		{
+			if (string.IsNullOrWhiteSpace(name))
+			{
+				return false;
+			}
+			if (string.Equals(transformName, name, StringComparison.OrdinalIgnoreCase))
+			{
+				return true;
+			}
+			if (transformNames == null)
+			{
+				return false;
+			}
+			for (int i = 0; i < transformNames.Length; i++)
+			{
+				if (string.Equals(transformNames[i], name, StringComparison.OrdinalIgnoreCase))
+				{
+					return true;
+				}
+			}
+			return false;
+		}
 	}
 
 	[Serializable]

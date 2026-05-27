@@ -1,0 +1,9 @@
+{
+  "Id": "Toolshed.SelectiveInterchanges.RailLoader",
+  "DisplayName": "Toolshed Selective Interchanges",
+  "Author": "Hunter Rogers",
+  "Version": "0.1.0",
+  "ManagerVersion": "0.27.10",
+  "AssemblyName": "ToolshedSelectiveInterchanges.dll",
+  "EntryMethod": "Toolshed.Main.Load"
+}
