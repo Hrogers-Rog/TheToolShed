@@ -120,4 +120,62 @@ namespace Toolshed.ServiceFacilities
 			return new PropertyChange(keyValueObject.RegisteredId, requestKey, new BoolPropertyValue(targetValue));
 		}
 	}
+
+	public sealed class ServiceFacilityStoragePickable : MonoBehaviour, IPickable
+	{
+		public string displayTitle = "Service Storage";
+		public Industry sourceIndustry;
+		public Load load;
+		public float capacity;
+		public float maxPickDistance = 50f;
+
+		public float MaxPickDistance
+		{
+			get { return maxPickDistance; }
+		}
+
+		public int Priority
+		{
+			get { return 0; }
+		}
+
+		public PickableActivationFilter ActivationFilter
+		{
+			get { return PickableActivationFilter.PrimaryOnly; }
+		}
+
+		public TooltipInfo TooltipInfo
+		{
+			get { return new TooltipInfo(displayTitle, StorageText()); }
+		}
+
+		public void Activate(PickableActivateEvent evt)
+		{
+		}
+
+		public void Deactivate()
+		{
+		}
+
+		private string StorageText()
+		{
+			if (sourceIndustry == null || load == null)
+			{
+				return "";
+			}
+
+			float quantity = sourceIndustry.Storage.QuantityInStorage(load, null);
+			float storageCapacity = capacity;
+			if (storageCapacity <= 0f)
+			{
+				sourceIndustry.TryGetStorageCapacity(load, out storageCapacity);
+			}
+
+			if (storageCapacity > 0f)
+			{
+				return TextSprites.PiePercent(quantity, storageCapacity) + " " + load.QuantityString(quantity);
+			}
+			return load.QuantityString(quantity);
+		}
+	}
 }

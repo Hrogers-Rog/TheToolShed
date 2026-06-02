@@ -52,6 +52,9 @@ namespace Toolshed.ServiceFacilities
 
 		public TrackSpan serviceTrackSpan;
 
+		[Tooltip("Delivery/interchange spans used by industry-side components. The physical service loader still uses its outlet point and CarLoadTarget radius.")]
+		public TrackSpan[] serviceTrackSpans = Array.Empty<TrackSpan>();
+
 		public Industry linkedIndustry;
 
 		public bool requirePlayerOwnedCars = true;
@@ -113,6 +116,19 @@ namespace Toolshed.ServiceFacilities
 		[Tooltip("Maximum flat distance from the service point to the matching CarLoadTarget.")]
 		public float extendedLoadTargetRadius = 8f;
 
+		[Tooltip("When enabled, matching tender CarLoadTarget points must be inside this local box instead of only inside a flat radius.")]
+		public bool useServiceTargetBox;
+
+		public Vector3 serviceTargetBoxCenter;
+
+		public Vector3 serviceTargetBoxSize;
+
+		[Tooltip("Restricts vanilla and extended service loading to cars on this facility's configured service track span.")]
+		public bool restrictLoadingToServiceTrackSpan;
+
+		[Tooltip("Route distance used when matching cars to the configured service track span.")]
+		public float serviceTrackRouteLimit = 80f;
+
 		private Load _load;
 
 		private string _lastConfiguredSummary;
@@ -128,6 +144,8 @@ namespace Toolshed.ServiceFacilities
 		private float _nextExtendedSearchDebugTime;
 
 		private float _nextExtendedNoMatchLogTime;
+
+		private float _nextExtendedTickDebugTime;
 
 		private float _lastVanillaTransferTime = -100f;
 
@@ -161,7 +179,16 @@ namespace Toolshed.ServiceFacilities
 					Configure();
 				}
 			}
-			RunExtendedTenderSearch();
+			try
+			{
+				RunExtendedTenderSearch();
+			}
+			catch (Exception ex)
+			{
+				SetExtendedLoading(false);
+				_nextExtendedLoadTime = Time.unscaledTime + 2f;
+				LogWarning("extended service loader search failed for '" + serviceLoadId + "': " + ex.GetType().Name + " - " + ex.Message);
+			}
 		}
 
 		private void OnValidate()
@@ -178,7 +205,7 @@ namespace Toolshed.ServiceFacilities
 			{
 				loadingRate = 0f;
 			}
-			serviceRadius = Mathf.Clamp(serviceRadius, 0.1f, 1f);
+			serviceRadius = Mathf.Max(0.1f, serviceRadius);
 			if (maximumSpeedMph < 0f)
 			{
 				maximumSpeedMph = 0f;
@@ -255,7 +282,8 @@ namespace Toolshed.ServiceFacilities
 
 		internal static float QuantityInSlot(Car car, int slotIndex)
 		{
-			if (car == null || slotIndex < 0)
+			if (car == null || slotIndex < 0 || car.Definition == null ||
+				car.Definition.LoadSlots == null || slotIndex >= car.Definition.LoadSlots.Count)
 			{
 				return 0f;
 			}
@@ -328,6 +356,90 @@ namespace Toolshed.ServiceFacilities
 					serviceConditionBoolKey + ", expected=" + serviceConditionExpectedValue);
 			}
 			return false;
+		}
+
+		internal bool CanLoadSlotSafely(Car car, int slotIndex)
+		{
+			if (car != null && car.Definition != null && car.Definition.LoadSlots != null &&
+				slotIndex >= 0 && slotIndex < car.Definition.LoadSlots.Count)
+			{
+				return true;
+			}
+			if (debugLogging)
+			{
+				LogDebug("[ServiceFacility][Loader] transfer blocked because target slot is invalid: car=" +
+					(car != null ? car.DisplayName : "<null>") +
+					", slot=" + slotIndex);
+			}
+			return false;
+		}
+
+		internal LoadSlot ResolveLoadTargetSafely(CarLoadTargetLoader loader, Car car, Vector3 point, out int slotIndex)
+		{
+			slotIndex = -1;
+			if (loader == null || car == null || loader.load == null || car.Definition == null || car.Definition.LoadSlots == null)
+			{
+				return null;
+			}
+
+			LogLoadTargetScan(loader, car, point);
+
+			Graph graph = TrainController.Shared != null ? TrainController.Shared.graph : null;
+			if (graph == null)
+			{
+				if (debugLogging)
+				{
+					LogDebug("[ServiceFacility][Loader] target scan skipped because train graph is unavailable: car=" + car.DisplayName);
+				}
+				return null;
+			}
+
+			Matrix4x4 transformMatrix = car.GetTransformMatrix(graph);
+			CarLoadTarget[] targets = car.GetComponentsInChildren<CarLoadTarget>();
+			for (int i = 0; i < targets.Length; i++)
+			{
+				CarLoadTarget target = targets[i];
+				if (target == null)
+				{
+					continue;
+				}
+				if (target.slotIndex < 0 || target.slotIndex >= car.Definition.LoadSlots.Count)
+				{
+					if (debugLogging)
+					{
+						LogDebug("[ServiceFacility][Loader] target skipped because slot is invalid: load=" +
+							loader.load.id +
+							", car=" + car.DisplayName +
+							", target=" + target.name +
+							", slot=" + target.slotIndex +
+							", slotCount=" + car.Definition.LoadSlots.Count);
+					}
+					continue;
+				}
+
+				LoadSlot loadSlot = car.Definition.LoadSlots[target.slotIndex];
+				if (loadSlot == null ||
+					string.IsNullOrEmpty(loadSlot.RequiredLoadIdentifier) ||
+					!string.Equals(loadSlot.RequiredLoadIdentifier, loader.load.id, StringComparison.OrdinalIgnoreCase))
+				{
+					continue;
+				}
+
+				Vector3 localPoint = car.transform.InverseTransformPoint(target.transform.position);
+				Vector3 targetPoint = transformMatrix.MultiplyPoint3x4(localPoint);
+				if (!MatchesServiceTargetArea(point, targetPoint, target.radius + loader.radius))
+				{
+					continue;
+				}
+				if (!AllowVanillaLoadTarget(loader, car, point, loadSlot, target.slotIndex))
+				{
+					continue;
+				}
+
+				slotIndex = target.slotIndex;
+				return loadSlot;
+			}
+			return null;
 		}
 
 		internal void LogLoadTargetScan(CarLoadTargetLoader loader, Car car, Vector3 point)
@@ -459,8 +571,8 @@ namespace Toolshed.ServiceFacilities
 			}
 
 			Vector3 point = WorldTransformer.WorldToGame(serviceLoader.transform.position);
-			_extendedSearchCars.Clear();
-			controller.CheckForCarsAtPoint(point, Mathf.Max(extendedSearchRadius, serviceLoader.radius + 2f), _extendedSearchCars, null);
+			LogExtendedTickStart(point);
+			CollectExtendedSearchCars(controller, point);
 			ExtendedLoadCandidate best = FindBestExtendedLoadCandidate(point, source);
 			if (!best.IsValid)
 			{
@@ -502,6 +614,57 @@ namespace Toolshed.ServiceFacilities
 				", capacity=" + facilityCapacity.ToString("0.###"));
 		}
 
+		private void CollectExtendedSearchCars(TrainController controller, Vector3 point)
+		{
+			_extendedSearchCars.Clear();
+			if (controller == null || controller.graph == null)
+			{
+				return;
+			}
+
+			float radius = Mathf.Max(extendedSearchRadius, serviceLoader != null ? serviceLoader.radius + 2f : 0f);
+			IReadOnlyCollection<Car> cars = controller.Cars;
+			int considered = 0;
+			int skipped = 0;
+			foreach (Car car in cars)
+			{
+				if (car == null || car.Definition == null || car.ghost || car.IsInBardo)
+				{
+					skipped++;
+					continue;
+				}
+
+				try
+				{
+					Vector3 center = car.GetCenterPosition(controller.graph);
+					float limit = radius + Mathf.Max(0f, car.carLength) * 0.5f + 10f;
+					if (FlatDistance(center, point) <= limit)
+					{
+						_extendedSearchCars.Add(car);
+					}
+					considered++;
+				}
+				catch (Exception ex)
+				{
+					skipped++;
+					if (debugLogging)
+					{
+						LogWarning("[ServiceFacility][LoaderProbe] manual car scan skipped " +
+							(car.DisplayName ?? car.name) + ": " + ex.GetType().Name + " - " + ex.Message);
+					}
+				}
+			}
+
+			if (debugLogging)
+			{
+				LogDebug("[ServiceFacility][LoaderProbe] manual car scan end " +
+					ProbeStateText(point, radius, _extendedSearchCars) +
+					", registryCars=" + cars.Count +
+					", considered=" + considered +
+					", skipped=" + skipped);
+			}
+		}
+
 		private ExtendedLoadCandidate FindBestExtendedLoadCandidate(Vector3 point, Industry source)
 		{
 			ExtendedLoadCandidate best = new ExtendedLoadCandidate();
@@ -529,6 +692,15 @@ namespace Toolshed.ServiceFacilities
 					if (details != null)
 					{
 						details.Add(carName + "[skip=not-player-owned]");
+					}
+					continue;
+				}
+				float routeDistance;
+				if (!IsCarOnServiceRoute(car, out routeDistance))
+				{
+					if (details != null)
+					{
+						details.Add(carName + "[skip=other-service-span]");
 					}
 					continue;
 				}
@@ -568,7 +740,7 @@ namespace Toolshed.ServiceFacilities
 						loadMatches = string.Equals(requiredLoad, _load.id, StringComparison.OrdinalIgnoreCase);
 						hasRoom = slot.MaximumCapacity <= 0f || quantity / slot.MaximumCapacity <= 0.999f;
 					}
-					bool distanceMatches = distance <= allowedDistance;
+					bool distanceMatches = MatchesServiceTargetArea(point, targetPoint, allowedDistance);
 
 					if (targetDetails != null)
 					{
@@ -609,6 +781,162 @@ namespace Toolshed.ServiceFacilities
 			return best;
 		}
 
+		internal bool AllowVanillaLoadTarget(CarLoadTargetLoader loader, Car car, Vector3 point, LoadSlot loadSlot, int slotIndex)
+		{
+			if (loader == null || car == null || loadSlot == null)
+			{
+				return true;
+			}
+
+			float routeDistance;
+			if (IsCarOnServiceRoute(car, out routeDistance))
+			{
+				return true;
+			}
+
+			if (debugLogging)
+			{
+				LogDebug("[ServiceFacility][Loader] target rejected load=" +
+					(loader.load != null ? loader.load.id : "<null>") +
+					", car=" + car.DisplayName +
+					", slot=" + slotIndex +
+					", reason=outside-service-track-span" +
+					", point=" + FormatVector(point));
+			}
+			return false;
+		}
+
+		private bool IsCarOnServiceRoute(Car car, out float actualDistance)
+		{
+			actualDistance = 0f;
+			if (!restrictLoadingToServiceTrackSpan)
+			{
+				return true;
+			}
+			Location routeRequirement;
+			if (car == null || serviceTrackSpan == null || !serviceTrackSpan.IsValid || !TryGetServiceRouteRequirement(out routeRequirement))
+			{
+				return false;
+			}
+			if (!IsCarOnServiceTrackSegments(car))
+			{
+				return false;
+			}
+			TrainController controller = TrainController.Shared;
+			if (controller == null || controller.graph == null)
+			{
+				return true;
+			}
+
+			float limit = EffectiveServiceRouteLimit(car);
+			float frontDistance = 0f;
+			bool frontMatches = car.LocationF.IsValid && controller.graph.CheckSameRoute(car.LocationF, routeRequirement, limit, out frontDistance);
+			float rearDistance = 0f;
+			bool rearMatches = car.LocationR.IsValid && controller.graph.CheckSameRoute(car.LocationR, routeRequirement, limit, out rearDistance);
+			if (frontMatches && rearMatches)
+			{
+				actualDistance = Mathf.Min(frontDistance, rearDistance);
+				return true;
+			}
+			if (frontMatches)
+			{
+				actualDistance = frontDistance;
+				return true;
+			}
+			if (rearMatches)
+			{
+				actualDistance = rearDistance;
+				return true;
+			}
+			return false;
+		}
+
+		private bool MatchesServiceTargetArea(Vector3 point, Vector3 targetPoint, float allowedDistance)
+		{
+			if (!useServiceTargetBox || serviceTargetBoxSize == Vector3.zero || serviceLoader == null)
+			{
+				return FlatDistance(point, targetPoint) <= allowedDistance;
+			}
+
+			Vector3 targetWorld = WorldTransformer.GameToWorld(targetPoint);
+			Vector3 local = serviceLoader.transform.InverseTransformPoint(targetWorld) - serviceTargetBoxCenter;
+			Vector3 halfSize = new Vector3(
+				Mathf.Max(0.01f, Mathf.Abs(serviceTargetBoxSize.x)) * 0.5f,
+				Mathf.Max(0.01f, Mathf.Abs(serviceTargetBoxSize.y)) * 0.5f,
+				Mathf.Max(0.01f, Mathf.Abs(serviceTargetBoxSize.z)) * 0.5f);
+			return Mathf.Abs(local.x) <= halfSize.x &&
+				Mathf.Abs(local.y) <= halfSize.y &&
+				Mathf.Abs(local.z) <= halfSize.z;
+		}
+
+		private bool IsCarOnServiceTrackSegments(Car car)
+		{
+			if (car == null || serviceTrackSpan == null)
+			{
+				return false;
+			}
+
+			IReadOnlyCollection<TrackSegment> segments = serviceTrackSpan.GetSegments();
+			if (segments == null || segments.Count == 0)
+			{
+				return false;
+			}
+			return LocationIsOnAnySegment(car.LocationF, segments) || LocationIsOnAnySegment(car.LocationR, segments);
+		}
+
+		private static bool LocationIsOnAnySegment(Location location, IReadOnlyCollection<TrackSegment> segments)
+		{
+			if (!location.IsValid || segments == null)
+			{
+				return false;
+			}
+			foreach (TrackSegment segment in segments)
+			{
+				if (segment != null && location.segment == segment)
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
+		private bool TryGetServiceRouteRequirement(out Location routeRequirement)
+		{
+			routeRequirement = default(Location);
+			if (!restrictLoadingToServiceTrackSpan || serviceTrackSpan == null)
+			{
+				return false;
+			}
+
+			Location? lower = serviceTrackSpan.lower;
+			if (lower.HasValue)
+			{
+				routeRequirement = lower.Value;
+				return true;
+			}
+			Location? upper = serviceTrackSpan.upper;
+			if (upper.HasValue)
+			{
+				routeRequirement = upper.Value;
+				return true;
+			}
+			return false;
+		}
+
+		private float EffectiveServiceRouteLimit(Car car)
+		{
+			float limit = serviceTrackRouteLimit > 0f ? serviceTrackRouteLimit : 80f;
+			if (serviceTrackSpan != null && serviceTrackSpan.IsValid)
+			{
+				limit = Mathf.Max(limit, serviceTrackSpan.Length + extendedSearchRadius + 5f);
+			}
+			if (car != null)
+			{
+				limit = Mathf.Max(limit, car.carLength + extendedSearchRadius + 5f);
+			}
+			return Mathf.Max(limit, 10f);
+		}
+
 		private void LogExtendedSearchNoMatch(Vector3 point)
 		{
 			if (!debugLogging || Time.unscaledTime < _nextExtendedNoMatchLogTime)
@@ -621,6 +949,16 @@ namespace Toolshed.ServiceFacilities
 				", point=" + FormatVector(point) +
 				", searchRadius=" + extendedSearchRadius.ToString("0.###") +
 				", targetRadius=" + extendedLoadTargetRadius.ToString("0.###"));
+		}
+
+		private void LogExtendedTickStart(Vector3 point)
+		{
+			if (!debugLogging || Time.unscaledTime < _nextExtendedTickDebugTime)
+			{
+				return;
+			}
+			_nextExtendedTickDebugTime = Time.unscaledTime + 1f;
+			LogDebug("[ServiceFacility][LoaderProbe] extended tick begin " + ProbeStateText(point, Mathf.Max(extendedSearchRadius, serviceLoader.radius + 2f), null));
 		}
 
 		private void SetExtendedLoading(bool loading)
@@ -689,11 +1027,17 @@ namespace Toolshed.ServiceFacilities
 			serviceLoader.sourceIndustry = infiniteSupply ? null : ResolveLinkedIndustry();
 			serviceLoader.outputRate = loadingRate;
 			serviceLoader.maximumSpeedInMph = maximumSpeedMph;
-			serviceLoader.radius = Mathf.Clamp(serviceRadius, 0.1f, 1f);
+			serviceLoader.radius = Mathf.Max(0.1f, serviceRadius);
 			serviceLoader.keyValueObject = keyValueObject;
 			serviceLoader.canLoadBoolKey = canLoadBoolKey;
 			serviceLoader.isLoadingBoolKey = isLoadingBoolKey;
 			serviceLoader.onlyLoadPlayerCars = requirePlayerOwnedCars;
+			serviceLoader.enabled = !UseManualServiceLoaderOnly();
+		}
+
+		private bool UseManualServiceLoaderOnly()
+		{
+			return enableExtendedTenderSearch && useServiceTargetBox;
 		}
 
 		private void ConfigureSequencer()
@@ -752,12 +1096,19 @@ namespace Toolshed.ServiceFacilities
 				return;
 			}
 			receivingUnloader.load = _load;
-			receivingUnloader.maxStorage = Mathf.Max(facilityCapacity, _load.ZeroThreshold);
+			float previousMaxStorage = receivingUnloader.maxStorage;
+			// Multiple physical outlets can share one facility bin. Repeated configuration must not shrink
+			// the vanilla receiving component, or a later chute with fallback capacity can block supply cars.
+			receivingUnloader.maxStorage = Mathf.Max(previousMaxStorage, facilityCapacity, _load.ZeroThreshold);
 			receivingUnloader.storageConsumptionRate = 0f;
 			receivingUnloader.carUnloadRate = Mathf.Max(receivingUnloader.carUnloadRate, _load.NominalQuantityPerCarLoad);
 			receivingUnloader.orderLoads = false;
 			receivingUnloader.orderAwayEmpties = true;
 			ApplyIndustryComponentDefaults(receivingUnloader);
+			LogDebug("receiving unloader configured: load=" + _load.id +
+				", maxStorage " + previousMaxStorage.ToString("0.###") +
+				" -> " + receivingUnloader.maxStorage.ToString("0.###") +
+				", spans=" + (receivingUnloader.trackSpans != null ? receivingUnloader.trackSpans.Length : 0));
 		}
 
 		private void ConfigureInterchangedLoader(Industry source)
@@ -831,16 +1182,127 @@ namespace Toolshed.ServiceFacilities
 			{
 				return;
 			}
-			component.carTypeFilter = new CarTypeFilter(string.IsNullOrWhiteSpace(carTypeFilterQuery) ? "*" : carTypeFilterQuery);
-			if (serviceTrackSpan != null)
+			if (!string.IsNullOrWhiteSpace(carTypeFilterQuery) || component.carTypeFilter == null)
+			{
+				component.carTypeFilter = new CarTypeFilter(string.IsNullOrWhiteSpace(carTypeFilterQuery) ? "*" : carTypeFilterQuery);
+			}
+			TrackSpan[] spans = EffectiveIndustryTrackSpans(component.trackSpans);
+			if (spans.Length > 0)
 			{
 				// Industry ops use track spans to find standing cars; the physical loader still uses point/radius.
-				component.trackSpans = new TrackSpan[]
+				if (!TrackSpanSetsMatch(component.trackSpans, spans))
 				{
-					serviceTrackSpan
-				};
+					component.trackSpans = spans;
+				}
 			}
 			component.sharedStorage = true;
+		}
+
+		private TrackSpan[] EffectiveIndustryTrackSpans(TrackSpan[] existingSpans)
+		{
+			List<TrackSpan> spans = new List<TrackSpan>();
+			AddUniqueSpans(spans, existingSpans);
+			AddUniqueSpans(spans, serviceTrackSpans);
+			if (serviceTrackSpan != null)
+			{
+				AddUniqueSpan(spans, serviceTrackSpan);
+			}
+			return spans.ToArray();
+		}
+
+		private static void AddUniqueSpans(List<TrackSpan> spans, TrackSpan[] candidates)
+		{
+			if (spans == null || candidates == null)
+			{
+				return;
+			}
+			for (int i = 0; i < candidates.Length; i++)
+			{
+				AddUniqueSpan(spans, candidates[i]);
+			}
+		}
+
+		private static void AddUniqueSpan(List<TrackSpan> spans, TrackSpan candidate)
+		{
+			if (spans == null || candidate == null || !candidate.IsValid || spans.Contains(candidate))
+			{
+				return;
+			}
+			spans.Add(candidate);
+		}
+
+		private static bool TrackSpanSetsMatch(TrackSpan[] existingSpans, TrackSpan[] desiredSpans)
+		{
+			if (existingSpans == null || desiredSpans == null || existingSpans.Length != desiredSpans.Length)
+			{
+				return false;
+			}
+			for (int i = 0; i < existingSpans.Length; i++)
+			{
+				TrackSpan existing = existingSpans[i];
+				if (existing == null || !existing.IsValid || !ContainsTrackSpan(desiredSpans, existing))
+				{
+					return false;
+				}
+			}
+			for (int i = 0; i < desiredSpans.Length; i++)
+			{
+				TrackSpan desired = desiredSpans[i];
+				if (desired == null || !desired.IsValid || !ContainsTrackSpan(existingSpans, desired))
+				{
+					return false;
+				}
+			}
+			return true;
+		}
+
+		private static bool ContainsTrackSpan(TrackSpan[] spans, TrackSpan candidate)
+		{
+			if (spans == null || candidate == null)
+			{
+				return false;
+			}
+			for (int i = 0; i < spans.Length; i++)
+			{
+				if (ReferenceEquals(spans[i], candidate))
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
+		internal static bool TryGetFacilityForUnloader(IndustryUnloader unloader, out UniversalServiceFacilityComponent facility)
+		{
+			facility = null;
+			if (unloader == null || unloader.load == null)
+			{
+				return false;
+			}
+			foreach (UniversalServiceFacilityComponent candidate in ActiveFacilities)
+			{
+				if (candidate == null || candidate.receivingUnloader != unloader)
+				{
+					continue;
+				}
+				Load load = candidate._load ?? candidate.ResolveLoad();
+				if (load != null && string.Equals(load.id, unloader.load.id, StringComparison.OrdinalIgnoreCase))
+				{
+					facility = candidate;
+					return true;
+				}
+			}
+			return false;
+		}
+
+		internal static bool TryGetDebugFacilityForUnloader(IndustryUnloader unloader, out UniversalServiceFacilityComponent facility)
+		{
+			if (TryGetFacilityForUnloader(unloader, out facility) && facility.debugLogging)
+			{
+				return true;
+			}
+			facility = null;
+			return false;
 		}
 
 		private Industry ResolveLinkedIndustry()
@@ -926,6 +1388,142 @@ namespace Toolshed.ServiceFacilities
 			{
 				Main.Log("[ServiceFacility] " + name + ": " + message);
 			}
+		}
+
+		internal void LogVanillaLoadSlotProbe(CarLoadTargetLoader loader, Car car, Vector3 point)
+		{
+			if (!debugLogging)
+			{
+				return;
+			}
+			LogDebug("[ServiceFacility][LoaderProbe] vanilla LoadSlotFromCar begin " +
+				ProbeStateText(point, loader != null ? loader.radius : 0f, null) +
+				", car=" + CarProbeText(car));
+		}
+
+		internal void LogVanillaSetLoading(CarLoadTargetLoader loader, bool loading)
+		{
+			if (!debugLogging)
+			{
+				return;
+			}
+			Vector3 point = loader != null ? WorldTransformer.WorldToGame(loader.transform.position) : Vector3.zero;
+			LogDebug("[ServiceFacility][LoaderProbe] vanilla SetLoading(" + loading + ") " +
+				ProbeStateText(point, loader != null ? loader.radius : 0f, null));
+		}
+
+		internal static bool TryBuildCarScanProbe(Vector3 point, float radius, HashSet<Car> foundCars, string phase, out string description)
+		{
+			description = null;
+			foreach (UniversalServiceFacilityComponent facility in ActiveFacilities)
+			{
+				if (facility == null || !facility.debugLogging || facility.serviceLoader == null)
+				{
+					continue;
+				}
+
+				Vector3 loaderPoint = WorldTransformer.WorldToGame(facility.serviceLoader.transform.position);
+				float distance = FlatDistance(loaderPoint, point);
+				float matchRadius = Mathf.Max(radius + facility.serviceRadius + 2f, 4f);
+				if (distance > matchRadius)
+				{
+					continue;
+				}
+
+				description = "phase=" + phase +
+					", facility=" + facility.name +
+					", " + facility.ProbeStateText(point, radius, foundCars) +
+					", loaderPoint=" + FormatVector(loaderPoint) +
+					", probeDistance=" + distance.ToString("0.###") + "/" + matchRadius.ToString("0.###");
+				return true;
+			}
+			return false;
+		}
+
+		private string ProbeStateText(Vector3 point, float radius, HashSet<Car> foundCars)
+		{
+			return "id=" + (keyValueObject != null ? keyValueObject.RegisteredId ?? "<local>" : "<no-kvo>") +
+				", load=" + (_load != null ? _load.id : serviceLoadId ?? "<none>") +
+				", source=" + SourceProbeText() +
+				", point=" + FormatVector(point) +
+				", queryRadius=" + radius.ToString("0.###") +
+				", serviceRadius=" + serviceRadius.ToString("0.###") +
+				", useBox=" + useServiceTargetBox +
+				", boxCenter=" + FormatVector(serviceTargetBoxCenter) +
+				", boxSize=" + FormatVector(serviceTargetBoxSize) +
+				", storage=" + currentStorage.ToString("0.###") + "/" + facilityCapacity.ToString("0.###") +
+				", keys=[" + KeyProbeText(requestLoadingBoolKey) + ", " +
+				KeyProbeText(prepareLoadBoolKey) + ", " +
+				KeyProbeText(canLoadBoolKey) + ", " +
+				KeyProbeText(isLoadingBoolKey) + ", " +
+				KeyProbeText(animateLoadBoolKey) + "]" +
+				(foundCars != null ? ", foundCars=" + CarsProbeText(foundCars) : "");
+		}
+
+		private string SourceProbeText()
+		{
+			if (infiniteSupply)
+			{
+				return "infinite";
+			}
+			Industry source = ResolveLinkedIndustry();
+			return source != null ? source.identifier : "<missing>";
+		}
+
+		private string KeyProbeText(string key)
+		{
+			if (keyValueObject == null || string.IsNullOrEmpty(key))
+			{
+				return (key ?? "<none>") + "=<missing>";
+			}
+			return key + "=" + keyValueObject[key].BoolValue;
+		}
+
+		private static string CarsProbeText(HashSet<Car> cars)
+		{
+			if (cars == null)
+			{
+				return "<null>";
+			}
+			if (cars.Count == 0)
+			{
+				return "0";
+			}
+
+			List<string> values = new List<string>();
+			foreach (Car car in cars)
+			{
+				if (values.Count >= 6)
+				{
+					values.Add("...");
+					break;
+				}
+				values.Add(CarProbeText(car));
+			}
+			return cars.Count + " [" + string.Join("; ", values.ToArray()) + "]";
+		}
+
+		private static string CarProbeText(Car car)
+		{
+			if (car == null)
+			{
+				return "<null>";
+			}
+			return car.DisplayName +
+				", owned=" + car.IsOwnedByPlayer +
+				", speedMph=" + (Mathf.Abs(car.velocity) * 2.23694f).ToString("0.###") +
+				", len=" + car.carLength.ToString("0.###") +
+				", locF=" + LocationProbeText(car.LocationF) +
+				", locR=" + LocationProbeText(car.LocationR);
+		}
+
+		private static string LocationProbeText(Location location)
+		{
+			if (!location.IsValid)
+			{
+				return "<invalid>";
+			}
+			return location.segment != null ? location.segment.id : "<null-segment>";
 		}
 
 		private static float FlatDistance(Vector3 a, Vector3 b)

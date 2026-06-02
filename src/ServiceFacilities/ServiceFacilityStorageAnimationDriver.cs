@@ -44,6 +44,7 @@ namespace Toolshed.ServiceFacilities
 
 		private void OnEnable()
 		{
+			NormalizeNames();
 			ResolveClip();
 			SampleStorage();
 		}
@@ -64,6 +65,7 @@ namespace Toolshed.ServiceFacilities
 			sampleRoot = root;
 			sourceIndustry = industry;
 			load = storageLoad;
+			NormalizeNames();
 			_clip = null;
 			_resolvedSampleRoot = null;
 			_fallbackTransform = null;
@@ -147,6 +149,7 @@ namespace Toolshed.ServiceFacilities
 
 		private void ResolveClip()
 		{
+			NormalizeNames();
 			if (_clip != null || animationMap == null || string.IsNullOrWhiteSpace(animationMapKey))
 			{
 				return;
@@ -284,6 +287,7 @@ namespace Toolshed.ServiceFacilities
 
 		private Transform ResolveFallbackTransform()
 		{
+			NormalizeNames();
 			if (_fallbackTransform != null)
 			{
 				GameObject root = sampleRoot != null ? sampleRoot : SampleRoot();
@@ -302,7 +306,7 @@ namespace Toolshed.ServiceFacilities
 			for (int i = 0; i < transforms.Length; i++)
 			{
 				Transform transform = transforms[i];
-				if (string.Equals(transform.name, fallbackTransformName, System.StringComparison.OrdinalIgnoreCase))
+				if (NamesEqual(transform.name, fallbackTransformName))
 				{
 					_fallbackTransform = transform;
 					if (debugLogging)
@@ -438,13 +442,29 @@ namespace Toolshed.ServiceFacilities
 			for (int i = 0; i < map.animationClips.Count; i++)
 			{
 				AnimationMap.MapEntry entry = map.animationClips[i];
-				if (string.Equals(entry.name, animationMapKey, System.StringComparison.OrdinalIgnoreCase) ||
-					(entry.clip != null && string.Equals(entry.clip.name, animationMapKey, System.StringComparison.OrdinalIgnoreCase)))
+				if (NamesEqual(entry.name, animationMapKey) ||
+					(entry.clip != null && NamesEqual(entry.clip.name, animationMapKey)))
 				{
 					return true;
 				}
 			}
 			return map.animationClips.Count == 1;
+		}
+
+		private void NormalizeNames()
+		{
+			animationMapKey = Clean(animationMapKey);
+			fallbackTransformName = Clean(fallbackTransformName);
+		}
+
+		private static string Clean(string value)
+		{
+			return string.IsNullOrWhiteSpace(value) ? "" : value.Trim();
+		}
+
+		private static bool NamesEqual(string left, string right)
+		{
+			return string.Equals(Clean(left), Clean(right), System.StringComparison.OrdinalIgnoreCase);
 		}
 
 		private static bool IsChildOf(Transform child, Transform ancestor)

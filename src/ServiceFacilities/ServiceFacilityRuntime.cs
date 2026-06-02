@@ -308,11 +308,20 @@ namespace Toolshed.ServiceFacilities
 				Load resolvedLoad = ResolveLoad(definition.serviceLoadId);
 				bool resolvedUsesInfiniteSupply = definition.UsesInfiniteSupply;
 				Industry resolvedIndustry = resolvedUsesInfiniteSupply ? null : ResolveIndustry(definition);
-				TrackSpan resolvedSpan = ResolveTrackSpan(definition);
+				TrackSpan[] resolvedSpans = ResolveTrackSpans(definition);
+				TrackSpan resolvedSpan = FirstTrackSpan(resolvedSpans);
 				if (resolvedLoad != null && (resolvedUsesInfiniteSupply || resolvedIndustry != null))
 				{
-					PlaceServiceRoot(existing.gameObject, definition, resolvedSpan);
-					ConfigureRuntimeObject(existing.gameObject, existingTarget, id, definition, resolvedIndustry, resolvedSpan, resolvedLoad);
+					if (!PlaceServiceRoot(existing.gameObject, definition, resolvedSpan, existingTarget))
+					{
+						existing.gameObject.SetActive(false);
+						return;
+					}
+					ConfigureRuntimeObject(existing.gameObject, existingTarget, id, definition, resolvedIndustry, resolvedSpan, resolvedSpans, resolvedLoad);
+					if (!existing.gameObject.activeSelf)
+					{
+						existing.gameObject.SetActive(true);
+					}
 					existing.Configure();
 				}
 				EnsureAnimations(definition, existing.gameObject, existingTarget);
@@ -327,7 +336,10 @@ namespace Toolshed.ServiceFacilities
 				WarnOnce(id + ":target", "waiting for target object '" + definition.TargetDescription + "' from " + definition.sourceFile);
 				return;
 			}
-
+			if (TryApplyAuthoredLoadPoints(definition, target))
+			{
+				return;
+			}
 			Load load = ResolveLoad(definition.serviceLoadId);
 			if (load == null)
 			{
@@ -343,7 +355,8 @@ namespace Toolshed.ServiceFacilities
 				return;
 			}
 
-			TrackSpan span = ResolveTrackSpan(definition);
+			TrackSpan[] spans = ResolveTrackSpans(definition);
+			TrackSpan span = FirstTrackSpan(spans);
 			GameObject serviceRoot = target.transform.Find("Toolshed Service Facility - " + id)?.gameObject;
 			if (serviceRoot == null)
 			{
@@ -356,8 +369,11 @@ namespace Toolshed.ServiceFacilities
 				serviceRoot.SetActive(false);
 			}
 
-			PlaceServiceRoot(serviceRoot, definition, span);
-			ConfigureRuntimeObject(serviceRoot, target, id, definition, industry, span, load);
+			if (!PlaceServiceRoot(serviceRoot, definition, span, target))
+			{
+				return;
+			}
+			ConfigureRuntimeObject(serviceRoot, target, id, definition, industry, span, spans, load);
 			serviceRoot.SetActive(true);
 
 			UniversalServiceFacilityComponent facility = serviceRoot.GetComponent<UniversalServiceFacilityComponent>();
@@ -369,7 +385,613 @@ namespace Toolshed.ServiceFacilities
 			Main.Log("[ServiceFacility] attached " + id + " to " + target.name + " load=" + definition.serviceLoadId + ", source=" + (industry != null ? industry.identifier : "infinite"));
 		}
 
-		private static void ConfigureRuntimeObject(GameObject serviceRoot, GameObject target, string id, ServiceFacilityDefinition definition, Industry industry, TrackSpan span, Load load)
+		private static bool TryApplyAuthoredLoadPoints(ServiceFacilityDefinition definition, GameObject target)
+		{
+			if (!definition.useAuthoredLoadPoints || target == null)
+			{
+				return false;
+			}
+
+			ServiceFacilityLoadPointAuthoring[] loadPoints = target.GetComponentsInChildren<ServiceFacilityLoadPointAuthoring>(true);
+			if (loadPoints == null || loadPoints.Length == 0)
+			{
+				if (definition.requireAuthoredLoadPoints)
+				{
+					WarnOnce(definition.EffectiveId + ":authored-load-points",
+						"target '" + definition.TargetDescription + "' has no Toolshed service load point components. Legacy JSON binding is disabled for this entry.");
+					return true;
+				}
+				return false;
+			}
+
+			List<ServiceFacilityLoadPointAuthoring> selectedLoadPoints = loadPoints
+				.Where(loadPoint => loadPoint != null && MatchesLoadPointFilter(definition, loadPoint))
+				.ToList();
+			if (selectedLoadPoints.Count == 0)
+			{
+				WarnOnce(definition.EffectiveId + ":authored-load-point",
+					"target '" + definition.TargetDescription + "' has Toolshed service load point components, but none match loadPointId '" +
+					definition.LoadPointDescription + "'.");
+				return true;
+			}
+
+			ServiceFacilityStorageAuthoring[] storages = target.GetComponentsInChildren<ServiceFacilityStorageAuthoring>(true);
+			for (int i = 0; i < selectedLoadPoints.Count; i++)
+			{
+				ServiceFacilityLoadPointAuthoring loadPoint = selectedLoadPoints[i];
+				ServiceFacilityStorageAuthoring storage = ResolveStorageAuthoring(storages, definition, loadPoint);
+				ServiceFacilityDefinition pointDefinition = BuildDefinitionForAuthoredLoadPoint(definition, loadPoint, storage);
+				if (AuthoredLoadPointAlreadyApplied(pointDefinition, loadPoint))
+				{
+					continue;
+				}
+				ApplyAuthoredLoadPoint(pointDefinition, target, loadPoint, storage);
+			}
+
+			return true;
+		}
+
+		private static bool AuthoredLoadPointAlreadyApplied(ServiceFacilityDefinition definition, ServiceFacilityLoadPointAuthoring loadPoint)
+		{
+			if (definition == null || loadPoint == null)
+			{
+				return false;
+			}
+			string id = definition.EffectiveId;
+			if (string.IsNullOrWhiteSpace(id))
+			{
+				return false;
+			}
+
+			UniversalServiceFacilityComponent facility;
+			if (!Applied.TryGetValue(id, out facility) || facility == null)
+			{
+				if (Applied.ContainsKey(id))
+				{
+					Applied.Remove(id);
+					RemoveBindingsFor(id);
+				}
+				return false;
+			}
+
+			if (facility.transform.parent != loadPoint.transform)
+			{
+				return false;
+			}
+
+			if (!facility.gameObject.activeSelf)
+			{
+				facility.gameObject.SetActive(true);
+			}
+			return true;
+		}
+
+		private static void ApplyAuthoredLoadPoint(ServiceFacilityDefinition definition, GameObject target, ServiceFacilityLoadPointAuthoring loadPoint, ServiceFacilityStorageAuthoring storage)
+		{
+			string id = definition.EffectiveId;
+			Load load = ResolveLoad(definition.serviceLoadId);
+			if (load == null)
+			{
+				WarnOnce(id + ":load", "waiting for load id '" + definition.serviceLoadId + "' for " + id);
+				return;
+			}
+
+			bool usesInfiniteSupply = definition.UsesInfiniteSupply;
+			Industry industry = usesInfiniteSupply ? null : ResolveIndustry(definition);
+			if (!usesInfiniteSupply && industry == null)
+			{
+				WarnOnce(id + ":industry", "waiting for source industry '" + definition.sourceIndustryId + "' for " + id);
+				return;
+			}
+
+			TrackSpan[] spans = ResolveTrackSpans(definition);
+			TrackSpan span = FirstTrackSpan(spans);
+			GameObject serviceRoot = FindServiceRoot(target, id);
+			if (serviceRoot == null)
+			{
+				serviceRoot = new GameObject("Toolshed Service Facility - " + id);
+				serviceRoot.SetActive(false);
+			}
+
+			PlaceServiceRootAtAuthoredLoadPoint(serviceRoot, loadPoint);
+			ConfigureRuntimeObject(serviceRoot, target, id, definition, industry, span, spans, load);
+			KeyValueObject keyValue = serviceRoot.GetComponent<KeyValueObject>();
+			ConfigureAuthoredPickable(loadPoint, definition, keyValue, definition.requestLoadingBoolKey, industry, load);
+			ConfigureAuthoredStoragePickable(storage, definition, industry, load);
+			serviceRoot.SetActive(true);
+
+			UniversalServiceFacilityComponent facility = serviceRoot.GetComponent<UniversalServiceFacilityComponent>();
+			facility.Configure();
+			SeedInitialStorageIfNeeded(definition, keyValue, industry, load, facility);
+			Applied[id] = facility;
+			EnsureAnimations(definition, serviceRoot, target);
+			EnsureStorageAnimations(definition, serviceRoot, target, industry, load);
+			EnsureParticleEffects(definition, serviceRoot, target);
+			if (definition.debugLogging)
+			{
+				Main.Log("[ServiceFacility] attached authored load point " + id +
+					" to " + TransformPath(loadPoint.transform) +
+					" load=" + definition.serviceLoadId +
+					", source=" + (industry != null ? industry.identifier : "infinite"));
+			}
+		}
+
+		private static GameObject FindServiceRoot(GameObject target, string id)
+		{
+			if (target == null || string.IsNullOrWhiteSpace(id))
+			{
+				return null;
+			}
+			string objectName = "Toolshed Service Facility - " + id;
+			Transform direct = target.transform.Find(objectName);
+			if (direct != null)
+			{
+				return direct.gameObject;
+			}
+			Transform nested = FindChildByName(target.transform, objectName);
+			return nested != null ? nested.gameObject : null;
+		}
+
+		private static void PlaceServiceRootAtAuthoredLoadPoint(GameObject serviceRoot, ServiceFacilityLoadPointAuthoring loadPoint)
+		{
+			if (serviceRoot == null || loadPoint == null)
+			{
+				return;
+			}
+			serviceRoot.transform.SetParent(loadPoint.transform, false);
+			serviceRoot.transform.localPosition = loadPoint.loaderLocalPosition;
+			serviceRoot.transform.localRotation = Quaternion.Euler(loadPoint.loaderLocalRotation);
+			serviceRoot.transform.localScale = Vector3.one;
+		}
+
+		private static void ConfigureAuthoredPickable(ServiceFacilityLoadPointAuthoring loadPoint, ServiceFacilityDefinition definition, KeyValueObject keyValue, string requestKey, Industry industry, Load load)
+		{
+			if (loadPoint == null || keyValue == null)
+			{
+				return;
+			}
+
+			string colliderDescription;
+			ConfigureInteractionCollider(loadPoint.gameObject, definition, out colliderDescription);
+			loadPoint.gameObject.layer = ObjectPicker.LayerClickable;
+			ServiceFacilityPickable pickable = loadPoint.GetComponent<ServiceFacilityPickable>() ?? loadPoint.gameObject.AddComponent<ServiceFacilityPickable>();
+			ConfigurePickable(pickable, definition, keyValue, requestKey, industry, load);
+			MakeCollidersClickable(loadPoint.gameObject);
+			if (definition.debugLogging)
+			{
+				Main.Log("[ServiceFacility][Loader] authored interaction for " + definition.EffectiveId +
+					" bound to " + TransformPath(loadPoint.transform) + ", " + colliderDescription);
+			}
+		}
+
+		private static void ConfigureAuthoredStoragePickable(ServiceFacilityStorageAuthoring storage, ServiceFacilityDefinition definition, Industry industry, Load load)
+		{
+			if (storage == null || industry == null || load == null)
+			{
+				return;
+			}
+
+			if (!storage.showStorageTooltip)
+			{
+				return;
+			}
+
+			string colliderDescription;
+			ConfigureCollider(storage.gameObject,
+				storage.useBoxInteractionCollider || storage.interactionBoxSize != Vector3.zero,
+				storage.interactionBoxCenter,
+				storage.interactionBoxSize,
+				storage.interactionRadius > 0f ? storage.interactionRadius : 1f,
+				out colliderDescription);
+			storage.gameObject.layer = ObjectPicker.LayerClickable;
+
+			ServiceFacilityStoragePickable pickable = storage.GetComponent<ServiceFacilityStoragePickable>() ??
+				storage.gameObject.AddComponent<ServiceFacilityStoragePickable>();
+			pickable.displayTitle = FirstNonEmpty(storage.displayTitle, definition.requestTitle, "Service Storage");
+			pickable.sourceIndustry = industry;
+			pickable.load = load;
+			pickable.capacity = Mathf.Max(definition.facilityCapacity, storage.facilityCapacity, 0f);
+			pickable.maxPickDistance = FirstPositive(storage.maxPickDistance, definition.maxPickDistance, 50f);
+			MakeCollidersClickable(storage.gameObject);
+
+			if (definition.debugLogging || storage.debugLogging)
+			{
+				Main.Log("[ServiceFacility][Storage] storage hover for " + definition.EffectiveId +
+					" bound to " + TransformPath(storage.transform) + ", " + colliderDescription);
+			}
+		}
+
+		private static void SeedInitialStorageIfNeeded(ServiceFacilityDefinition definition, KeyValueObject keyValue, Industry industry, Load load, UniversalServiceFacilityComponent facility)
+		{
+			if (definition == null || keyValue == null || industry == null || load == null || definition.initialStorage <= 0f)
+			{
+				return;
+			}
+
+			string seedKey = "toolshedSeeded." + definition.EffectiveId + "." + load.id;
+			if (keyValue[seedKey].BoolValue)
+			{
+				return;
+			}
+
+			float current = industry.Storage.QuantityInStorage(load, null);
+			if (current <= load.ZeroThreshold)
+			{
+				float amount = Mathf.Clamp(definition.initialStorage, 0f, Mathf.Max(definition.facilityCapacity, definition.initialStorage));
+				industry.Storage.SetStorage(load, amount, null);
+				if (facility != null)
+				{
+					facility.currentStorage = amount;
+				}
+				if (definition.debugLogging)
+				{
+					Main.Log("[ServiceFacility][Storage] seeded " + definition.EffectiveId +
+						" load=" + load.id +
+						", amount=" + amount.ToString("0.###") +
+						", capacity=" + definition.facilityCapacity.ToString("0.###"));
+				}
+			}
+			keyValue[seedKey] = Value.Bool(true);
+		}
+
+		private static ServiceFacilityStorageAuthoring ResolveStorageAuthoring(ServiceFacilityStorageAuthoring[] storages, ServiceFacilityDefinition definition, ServiceFacilityLoadPointAuthoring loadPoint)
+		{
+			if (storages == null || storages.Length == 0 || loadPoint == null)
+			{
+				return null;
+			}
+
+			string facilityId = !string.IsNullOrWhiteSpace(loadPoint.facilityId) ? loadPoint.facilityId : definition.facilityId;
+			string storageId = !string.IsNullOrWhiteSpace(loadPoint.storageId) ? loadPoint.storageId : definition.storageId;
+			string loadId = !string.IsNullOrWhiteSpace(loadPoint.serviceLoadId) ? loadPoint.serviceLoadId : definition.serviceLoadId;
+			for (int i = 0; i < storages.Length; i++)
+			{
+				ServiceFacilityStorageAuthoring storage = storages[i];
+				if (storage != null && storage.Matches(facilityId, storageId, loadId))
+				{
+					return storage;
+				}
+			}
+
+			for (int i = 0; i < storages.Length; i++)
+			{
+				ServiceFacilityStorageAuthoring storage = storages[i];
+				if (storage != null && storage.Matches(facilityId, null, loadId))
+				{
+					return storage;
+				}
+			}
+
+			ServiceFacilityStorageAuthoring storageByIdAndLoad = SingleStorageMatch(storages, storage =>
+				storage != null &&
+				StorageIdMatches(storage, storageId) &&
+				LoadIdMatches(storage.serviceLoadId, loadId));
+			if (storageByIdAndLoad != null)
+			{
+				return storageByIdAndLoad;
+			}
+
+			ServiceFacilityStorageAuthoring storageByLoad = SingleStorageMatch(storages, storage =>
+				storage != null && LoadIdMatches(storage.serviceLoadId, loadId));
+			if (storageByLoad != null)
+			{
+				return storageByLoad;
+			}
+
+			ServiceFacilityStorageAuthoring storageById = SingleStorageMatch(storages, storage =>
+				storage != null && StorageIdMatches(storage, storageId));
+			if (storageById != null)
+			{
+				return storageById;
+			}
+
+			return null;
+		}
+
+		private static ServiceFacilityStorageAuthoring SingleStorageMatch(ServiceFacilityStorageAuthoring[] storages, Func<ServiceFacilityStorageAuthoring, bool> predicate)
+		{
+			ServiceFacilityStorageAuthoring match = null;
+			if (storages == null || predicate == null)
+			{
+				return null;
+			}
+			for (int i = 0; i < storages.Length; i++)
+			{
+				ServiceFacilityStorageAuthoring storage = storages[i];
+				if (storage == null || !predicate(storage))
+				{
+					continue;
+				}
+				if (match != null)
+				{
+					return null;
+				}
+				match = storage;
+			}
+			return match;
+		}
+
+		private static bool StorageIdMatches(ServiceFacilityStorageAuthoring storage, string requestedStorageId)
+		{
+			if (storage == null || string.IsNullOrWhiteSpace(requestedStorageId))
+			{
+				return false;
+			}
+			string effectiveStorageId = storage.EffectiveStorageId;
+			return string.Equals(effectiveStorageId ?? "", requestedStorageId, StringComparison.OrdinalIgnoreCase) ||
+				string.Equals(storage.storageId ?? "", requestedStorageId, StringComparison.OrdinalIgnoreCase);
+		}
+
+		private static bool LoadIdMatches(string storageLoadId, string requestedLoadId)
+		{
+			if (string.IsNullOrWhiteSpace(requestedLoadId))
+			{
+				return false;
+			}
+			return string.IsNullOrWhiteSpace(storageLoadId) ||
+				string.Equals(storageLoadId, requestedLoadId, StringComparison.OrdinalIgnoreCase);
+		}
+
+		private static ServiceFacilityDefinition BuildDefinitionForAuthoredLoadPoint(ServiceFacilityDefinition baseDefinition, ServiceFacilityLoadPointAuthoring loadPoint, ServiceFacilityStorageAuthoring storage)
+		{
+			ServiceFacilityDefinition definition = new ServiceFacilityDefinition();
+			definition.id = ShouldAppendLoadPointId(baseDefinition)
+				? baseDefinition.EffectiveId + "." + ToIdPart(loadPoint.EffectiveLoadPointId)
+				: baseDefinition.EffectiveId;
+			definition.targetObjectName = baseDefinition.targetObjectName;
+			definition.targetObjectNames = baseDefinition.targetObjectNames;
+			definition.modelIdentifier = baseDefinition.modelIdentifier;
+			definition.modelIdentifiers = baseDefinition.modelIdentifiers;
+			definition.facilityId = !string.IsNullOrWhiteSpace(loadPoint.facilityId) ? loadPoint.facilityId : baseDefinition.facilityId;
+			definition.storageId = !string.IsNullOrWhiteSpace(loadPoint.storageId) ? loadPoint.storageId : baseDefinition.storageId;
+			definition.loadPointId = loadPoint.EffectiveLoadPointId;
+			definition.serviceLoadId = FirstNonEmpty(loadPoint.serviceLoadId, storage != null ? storage.serviceLoadId : null, baseDefinition.serviceLoadId);
+			definition.sourceIndustryId = baseDefinition.sourceIndustryId;
+			definition.sourceIndustryIds = baseDefinition.sourceIndustryIds;
+			definition.serviceTrackSpanId = baseDefinition.serviceTrackSpanId;
+			definition.serviceTrackSpanIds = baseDefinition.serviceTrackSpanIds;
+			definition.infiniteSupply = storage != null ? storage.infiniteSupply : baseDefinition.infiniteSupply;
+			definition.facilityCapacity = FirstPositive(storage != null ? storage.facilityCapacity : 0f, baseDefinition.facilityCapacity, 10000f);
+			definition.initialStorage = FirstPositive(storage != null ? storage.initialStorage : 0f, baseDefinition.initialStorage);
+			definition.loadingRate = FirstPositive(loadPoint.loadingRate, storage != null ? storage.defaultLoadingRate : 0f, baseDefinition.loadingRate);
+			definition.serviceRadius = FirstPositive(loadPoint.serviceRadius, baseDefinition.serviceRadius, 0.65f);
+			definition.maximumSpeedMph = FirstPositive(loadPoint.maximumSpeedMph, baseDefinition.maximumSpeedMph, 5f);
+			definition.requirePlayerOwnedCars = loadPoint.requirePlayerOwnedCars;
+			definition.configureReceivingUnloader = baseDefinition.configureReceivingUnloader || !definition.UsesInfiniteSupply;
+			definition.configureInterchangeLoader = baseDefinition.configureInterchangeLoader;
+			definition.createMissingIndustryComponents = baseDefinition.createMissingIndustryComponents || !definition.UsesInfiniteSupply;
+			definition.canPurchaseThroughInterchange = baseDefinition.canPurchaseThroughInterchange;
+			definition.purchaseDelayDays = baseDefinition.purchaseDelayDays;
+			definition.carTypeFilterQuery = baseDefinition.carTypeFilterQuery;
+			definition.debugLogging = baseDefinition.debugLogging || loadPoint.debugLogging || storage != null && storage.debugLogging;
+			definition.enableExtendedTenderSearch = loadPoint.enableExtendedTenderSearch || baseDefinition.enableExtendedTenderSearch;
+			definition.extendedSearchRadius = FirstPositive(loadPoint.extendedSearchRadius, baseDefinition.extendedSearchRadius, 8f);
+			definition.extendedLoadTargetRadius = FirstPositive(loadPoint.extendedLoadTargetRadius, baseDefinition.extendedLoadTargetRadius, 3f);
+			definition.useServiceTargetBox = loadPoint.useServiceTargetBox || baseDefinition.useServiceTargetBox;
+			definition.serviceTargetBoxCenter = loadPoint.serviceTargetBoxCenter != Vector3.zero ? loadPoint.serviceTargetBoxCenter : baseDefinition.serviceTargetBoxCenter;
+			definition.serviceTargetBoxSize = loadPoint.serviceTargetBoxSize != Vector3.zero ? loadPoint.serviceTargetBoxSize : baseDefinition.serviceTargetBoxSize;
+			definition.restrictLoadingToServiceTrackSpan = baseDefinition.restrictLoadingToServiceTrackSpan || loadPoint.restrictLoadingToServiceTrackSpan;
+			definition.serviceTrackRouteLimit = FirstPositive(loadPoint.serviceTrackRouteLimit, baseDefinition.serviceTrackRouteLimit, 80f);
+			definition.attachTargetPickable = false;
+			definition.createInteractionTrigger = false;
+			definition.interactionRadius = FirstPositive(loadPoint.interactionRadius, baseDefinition.interactionRadius, 0.45f);
+			definition.useBoxInteractionCollider = loadPoint.useBoxInteractionCollider || loadPoint.interactionBoxSize != Vector3.zero;
+			definition.interactionBoxCenter = loadPoint.interactionBoxCenter;
+			definition.interactionBoxSize = loadPoint.interactionBoxSize;
+			definition.requestTitle = FirstNonEmpty(loadPoint.displayTitle, baseDefinition.requestTitle, "Service Loader");
+			definition.requestMessageTrue = FirstNonEmpty(loadPoint.messageWhenActive, baseDefinition.requestMessageTrue, "Raise");
+			definition.requestMessageFalse = FirstNonEmpty(loadPoint.messageWhenInactive, baseDefinition.requestMessageFalse, "Lower");
+			definition.maxPickDistance = FirstPositive(loadPoint.maxPickDistance, baseDefinition.maxPickDistance, 50f);
+			definition.requestLoadingBoolKey = FirstNonEmpty(baseDefinition.requestLoadingBoolKey, "request");
+			definition.prepareLoadBoolKey = FirstNonEmpty(baseDefinition.prepareLoadBoolKey, "prepareLoad");
+			definition.canLoadBoolKey = FirstNonEmpty(baseDefinition.canLoadBoolKey, "canLoad");
+			definition.isLoadingBoolKey = FirstNonEmpty(baseDefinition.isLoadingBoolKey, "isLoading");
+			definition.animateLoadBoolKey = FirstNonEmpty(baseDefinition.animateLoadBoolKey, "animateLoad");
+			definition.requireServiceCondition = loadPoint.requireLoweredBeforeLoading || baseDefinition.requireServiceCondition;
+			definition.serviceConditionBoolKey = FirstNonEmpty(baseDefinition.serviceConditionBoolKey, definition.requestLoadingBoolKey);
+			definition.serviceConditionExpectedValue = true;
+			definition.animations = BuildAuthoredAnimationDefinitions(loadPoint, baseDefinition);
+			definition.storageAnimations = BuildAuthoredStorageAnimationDefinitions(storage, definition, baseDefinition.storageAnimations);
+			definition.particleEffects = BuildAuthoredParticleEffectDefinitions(loadPoint);
+			definition.sourceFile = baseDefinition.sourceFile;
+			return definition;
+		}
+
+		private static ServiceFacilityStorageAnimationDefinition[] BuildAuthoredStorageAnimationDefinitions(
+			ServiceFacilityStorageAuthoring storage,
+			ServiceFacilityDefinition definition,
+			ServiceFacilityStorageAnimationDefinition[] fallback)
+		{
+			if (storage == null || !storage.HasStorageAnimation)
+			{
+				return fallback;
+			}
+
+			return new[]
+			{
+				new ServiceFacilityStorageAnimationDefinition
+				{
+					animationMapKey = Clean(storage.storageAnimationMapKey),
+					loadId = FirstNonEmpty(storage.storageAnimationLoadId, storage.serviceLoadId, definition.serviceLoadId),
+					capacity = FirstPositive(storage.storageAnimationCapacity, storage.facilityCapacity, definition.facilityCapacity),
+					invert = storage.storageAnimationInvert,
+					useTransformFallback = storage.storageAnimationUseTransformFallback,
+					fallbackTransformName = Clean(storage.storageAnimationFallbackTransformName),
+					emptyLocalY = storage.storageAnimationEmptyLocalY,
+					fullLocalY = storage.storageAnimationFullLocalY,
+					emptyLocalScaleZ = storage.storageAnimationEmptyLocalScaleZ,
+					fullLocalScaleZ = storage.storageAnimationFullLocalScaleZ
+				}
+			};
+		}
+
+		private static bool ShouldAppendLoadPointId(ServiceFacilityDefinition definition)
+		{
+			if (definition == null)
+			{
+				return true;
+			}
+
+			int filterCount = 0;
+			if (!string.IsNullOrWhiteSpace(definition.loadPointId))
+			{
+				filterCount++;
+			}
+			if (definition.loadPointIds != null)
+			{
+				for (int i = 0; i < definition.loadPointIds.Length; i++)
+				{
+					if (!string.IsNullOrWhiteSpace(definition.loadPointIds[i]))
+					{
+						filterCount++;
+					}
+				}
+			}
+			return filterCount != 1;
+		}
+
+		private static ServiceFacilityAnimationDefinition[] BuildAuthoredAnimationDefinitions(ServiceFacilityLoadPointAuthoring loadPoint, ServiceFacilityDefinition baseDefinition)
+		{
+			if (loadPoint != null && !string.IsNullOrWhiteSpace(loadPoint.animationMapKey))
+			{
+				return new[]
+				{
+					new ServiceFacilityAnimationDefinition
+					{
+						animationMapKey = Clean(loadPoint.animationMapKey),
+						boolKey = "request",
+						speed = loadPoint.animationSpeed > 0f ? loadPoint.animationSpeed : 1f,
+						invert = loadPoint.animationInvert
+					}
+				};
+			}
+			return baseDefinition.animations;
+		}
+
+		private static ServiceFacilityParticleEffectDefinition[] BuildAuthoredParticleEffectDefinitions(ServiceFacilityLoadPointAuthoring loadPoint)
+		{
+			if (loadPoint == null || !loadPoint.HasParticleEffect)
+			{
+				return null;
+			}
+
+			Color color = new Color(
+				Mathf.Clamp01(loadPoint.effectColorRgb.x),
+				Mathf.Clamp01(loadPoint.effectColorRgb.y),
+				Mathf.Clamp01(loadPoint.effectColorRgb.z),
+				Mathf.Clamp01(loadPoint.effectAlpha));
+			return new[]
+			{
+				new ServiceFacilityParticleEffectDefinition
+				{
+					effectObjectName = Clean(loadPoint.existingEffectObjectName),
+					boolKey = FirstNonEmpty(loadPoint.effectBoolKey, "animateLoad"),
+					requiredBoolKey = loadPoint.requireLoweredBeforeLoading ? "request" : null,
+					requiredBoolExpectedValue = true,
+					createIfMissing = loadPoint.createParticleSystem,
+					requireParentTransform = true,
+					flowOriginId = Clean(loadPoint.flowOriginId),
+					parentTransformName = Clean(loadPoint.flowOriginId),
+					localEuler = loadPoint.effectLocalEuler,
+					emissionRate = FirstPositive(loadPoint.effectEmissionRate, 80f),
+					startLifetime = FirstPositive(loadPoint.effectStartLifetime, 0.35f),
+					startSpeed = FirstPositive(loadPoint.effectStartSpeed, 1f),
+					streamAnimationSpeed = loadPoint.flowAnimationSpeed,
+					startSize = FirstPositive(loadPoint.effectStartSize, 0.045f),
+					gravityModifier = loadPoint.effectGravityModifier,
+					overrideStartColor = true,
+					startColor = color,
+					createVisibleStream = loadPoint.createVisibleStream,
+					streamUsesWorldDown = loadPoint.streamUsesWorldDown,
+					streamLocalStart = loadPoint.streamLocalStart,
+					streamLocalEnd = loadPoint.streamLocalEnd,
+					streamLength = FirstPositive(loadPoint.streamLength, 1f),
+					streamWidth = FirstPositive(loadPoint.streamWidth, 0.06f),
+					streamColor = color,
+					debugOriginMarker = loadPoint.debugOriginMarker,
+					clearOnStop = true
+				}
+			};
+		}
+
+		private static bool MatchesLoadPointFilter(ServiceFacilityDefinition definition, ServiceFacilityLoadPointAuthoring loadPoint)
+		{
+			if (definition == null || loadPoint == null || !definition.HasLoadPointFilter)
+			{
+				return true;
+			}
+			foreach (string candidate in CandidateStrings(definition.loadPointId, definition.loadPointIds))
+			{
+				if (NamesEqual(candidate, loadPoint.EffectiveLoadPointId) ||
+					NamesEqual(candidate, loadPoint.name))
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
+		private static string FirstNonEmpty(params string[] values)
+		{
+			if (values == null)
+			{
+				return "";
+			}
+			for (int i = 0; i < values.Length; i++)
+			{
+				if (!string.IsNullOrWhiteSpace(values[i]))
+				{
+					return values[i].Trim();
+				}
+			}
+			return "";
+		}
+
+		private static string Clean(string value)
+		{
+			return string.IsNullOrWhiteSpace(value) ? "" : value.Trim();
+		}
+
+		private static bool NamesEqual(string left, string right)
+		{
+			return string.Equals(Clean(left), Clean(right), StringComparison.OrdinalIgnoreCase);
+		}
+
+		private static float FirstPositive(params float[] values)
+		{
+			if (values == null)
+			{
+				return 0f;
+			}
+			for (int i = 0; i < values.Length; i++)
+			{
+				if (values[i] > 0f)
+				{
+					return values[i];
+				}
+			}
+			return 0f;
+		}
+
+		private static string ToIdPart(string value)
+		{
+			if (string.IsNullOrWhiteSpace(value))
+			{
+				return "load-point";
+			}
+			char[] chars = value.Trim().ToLowerInvariant().ToCharArray();
+			for (int i = 0; i < chars.Length; i++)
+			{
+				char c = chars[i];
+				if (!(char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '.'))
+				{
+					chars[i] = '-';
+				}
+			}
+			return new string(chars);
+		}
+
+		private static void ConfigureRuntimeObject(GameObject serviceRoot, GameObject target, string id, ServiceFacilityDefinition definition, Industry industry, TrackSpan span, TrackSpan[] spans, Load load)
 		{
 			KeyValueObject keyValue = serviceRoot.GetComponent<KeyValueObject>() ?? serviceRoot.AddComponent<KeyValueObject>();
 			GlobalKeyValueObject global = serviceRoot.GetComponent<GlobalKeyValueObject>() ?? serviceRoot.AddComponent<GlobalKeyValueObject>();
@@ -391,8 +1013,15 @@ namespace Toolshed.ServiceFacilities
 			facility.serviceRadius = definition.serviceRadius > 0f ? definition.serviceRadius : 0.8f;
 			facility.maximumSpeedMph = definition.maximumSpeedMph > 0f ? definition.maximumSpeedMph : 5f;
 			facility.serviceTrackSpan = span;
+			facility.serviceTrackSpans = spans ?? Array.Empty<TrackSpan>();
 			facility.linkedIndustry = industry;
 			facility.requirePlayerOwnedCars = definition.requirePlayerOwnedCars;
+			facility.configureReceivingUnloader = definition.configureReceivingUnloader;
+			facility.configureInterchangeLoader = definition.configureInterchangeLoader;
+			facility.createMissingIndustryComponents = definition.createMissingIndustryComponents;
+			facility.canPurchaseThroughInterchange = definition.canPurchaseThroughInterchange;
+			facility.purchaseDelayDays = definition.purchaseDelayDays > 0f ? definition.purchaseDelayDays : 0.9583333f;
+			facility.carTypeFilterQuery = definition.carTypeFilterQuery ?? "";
 			facility.canLoadBoolKey = canLoadKey;
 			facility.isLoadingBoolKey = isLoadingKey;
 			facility.requestLoadingBoolKey = requestKey;
@@ -408,6 +1037,11 @@ namespace Toolshed.ServiceFacilities
 			facility.enableExtendedTenderSearch = definition.enableExtendedTenderSearch;
 			facility.extendedSearchRadius = definition.extendedSearchRadius > 0f ? definition.extendedSearchRadius : facility.extendedSearchRadius;
 			facility.extendedLoadTargetRadius = definition.extendedLoadTargetRadius > 0f ? definition.extendedLoadTargetRadius : facility.extendedLoadTargetRadius;
+			facility.useServiceTargetBox = definition.useServiceTargetBox;
+			facility.serviceTargetBoxCenter = definition.serviceTargetBoxCenter;
+			facility.serviceTargetBoxSize = definition.serviceTargetBoxSize;
+			facility.restrictLoadingToServiceTrackSpan = definition.restrictLoadingToServiceTrackSpan;
+			facility.serviceTrackRouteLimit = definition.serviceTrackRouteLimit > 0f ? definition.serviceTrackRouteLimit : facility.serviceTrackRouteLimit;
 
 			// These must be wired before the inactive service root is enabled; vanilla CarLoaderSequencer registers
 			// its key observer in OnEnable, and late assignment leaves manual request toggles unable to drive prepareLoad.
@@ -424,38 +1058,184 @@ namespace Toolshed.ServiceFacilities
 
 			if (definition.createInteractionTrigger)
 			{
-				ConfigureToggle(serviceRoot, definition, requestKey);
+				ConfigureToggle(serviceRoot, target, definition, keyValue, requestKey, industry, load);
 			}
-			ConfigureTargetPickable(target, definition, keyValue, requestKey, industry, load);
+			if (definition.attachTargetPickable)
+			{
+				ConfigureTargetPickable(target, definition, keyValue, requestKey, industry, load);
+			}
+			else
+			{
+				RemoveTargetPickable(target);
+			}
 		}
 
-		private static void ConfigureToggle(GameObject serviceRoot, ServiceFacilityDefinition definition, string requestKey)
+		private static void ConfigureToggle(GameObject serviceRoot, GameObject target, ServiceFacilityDefinition definition, KeyValueObject keyValue, string requestKey, Industry industry, Load load)
 		{
-			Transform toggleTransform = serviceRoot.transform.Find("Toolshed Service Toggle");
-			GameObject toggleObject;
+			Transform parent = ResolveInteractionParent(serviceRoot, target, definition);
+			if (parent == null)
+			{
+				return;
+			}
+
+			if (parent != serviceRoot.transform)
+			{
+				RemoveServiceRootToggle(serviceRoot);
+			}
+
+			string toggleName = "Toolshed Service Toggle - " + definition.EffectiveId;
+			RemoveStaleToggles(target, serviceRoot, parent, toggleName);
+			Transform toggleTransform = parent.Find(toggleName);
 			if (toggleTransform == null)
 			{
-				toggleObject = new GameObject("Toolshed Service Toggle");
-				toggleObject.transform.SetParent(serviceRoot.transform, false);
+				toggleTransform = parent.Find("Toolshed Service Toggle");
+			}
+			GameObject toggleObject;
+			bool created = false;
+			bool moved = false;
+			if (toggleTransform == null)
+			{
+				toggleObject = new GameObject(toggleName);
+				toggleObject.transform.SetParent(parent, false);
+				created = true;
 			}
 			else
 			{
 				toggleObject = toggleTransform.gameObject;
+				toggleObject.name = toggleName;
+				if (toggleObject.transform.parent != parent)
+				{
+					toggleObject.transform.SetParent(parent, false);
+					moved = true;
+				}
 			}
 
-			toggleObject.transform.localPosition = Vector3.zero;
-			toggleObject.transform.localRotation = Quaternion.identity;
+			toggleObject.transform.localPosition = definition.interactionLocalPosition;
+			toggleObject.transform.localRotation = Quaternion.Euler(definition.interactionLocalRotation);
 			toggleObject.transform.localScale = Vector3.one;
-			SphereCollider collider = toggleObject.GetComponent<SphereCollider>() ?? toggleObject.AddComponent<SphereCollider>();
-			collider.radius = definition.interactionRadius > 0f ? definition.interactionRadius : 3f;
-			collider.isTrigger = true;
+			string colliderDescription;
+			ConfigureInteractionCollider(toggleObject, definition, out colliderDescription);
 			toggleObject.layer = ObjectPicker.LayerClickable;
 
-			KeyValuePickableToggle toggle = toggleObject.GetComponent<KeyValuePickableToggle>() ?? toggleObject.AddComponent<KeyValuePickableToggle>();
-			toggle.key = requestKey;
-			toggle.displayTitle = string.IsNullOrWhiteSpace(definition.requestTitle) ? "Service Loader" : definition.requestTitle;
-			toggle.displayMessageTrue = string.IsNullOrWhiteSpace(definition.requestMessageTrue) ? "Click to Stop Loading" : definition.requestMessageTrue;
-			toggle.displayMessageFalse = string.IsNullOrWhiteSpace(definition.requestMessageFalse) ? "Click to Start Loading" : definition.requestMessageFalse;
+			KeyValuePickableToggle oldToggle = toggleObject.GetComponent<KeyValuePickableToggle>();
+			if (oldToggle != null)
+			{
+				UnityEngine.Object.Destroy(oldToggle);
+			}
+
+			ServiceFacilityPickable pickable = toggleObject.GetComponent<ServiceFacilityPickable>() ?? toggleObject.AddComponent<ServiceFacilityPickable>();
+			ConfigurePickable(pickable, definition, keyValue, requestKey, industry, load);
+			ConfigureInteractionSurfacePickable(parent, target, definition, keyValue, requestKey, industry, load);
+			if (definition.debugLogging && (created || moved))
+			{
+				Main.Log("[ServiceFacility][Loader] interaction trigger " + (created ? "created" : "moved") +
+					" for " + definition.EffectiveId + " under " + TransformPath(parent) +
+					", " + colliderDescription);
+			}
+		}
+
+		private static void ConfigureInteractionCollider(GameObject toggleObject, ServiceFacilityDefinition definition, out string description)
+		{
+			if (toggleObject == null)
+			{
+				description = "collider=<none>";
+				return;
+			}
+
+			float radius = definition.interactionRadius > 0f ? definition.interactionRadius : 3f;
+			if (definition.UseBoxInteractionCollider)
+			{
+				ConfigureCollider(toggleObject, true, definition.interactionBoxCenter, definition.interactionBoxSize, radius, out description);
+				return;
+			}
+
+			ConfigureCollider(toggleObject, false, Vector3.zero, Vector3.zero, radius, out description);
+		}
+
+		private static void ConfigureCollider(GameObject target, bool useBox, Vector3 boxCenter, Vector3 boxSize, float radius, out string description)
+		{
+			if (target == null)
+			{
+				description = "collider=<none>";
+				return;
+			}
+
+			if (useBox)
+			{
+				SphereCollider oldSphere = target.GetComponent<SphereCollider>();
+				if (oldSphere != null)
+				{
+					oldSphere.enabled = false;
+					UnityEngine.Object.Destroy(oldSphere);
+				}
+
+				BoxCollider box = target.GetComponent<BoxCollider>() ?? target.AddComponent<BoxCollider>();
+				box.center = boxCenter;
+				box.size = boxSize == Vector3.zero ? new Vector3(radius * 2f, radius * 2f, radius * 2f) : boxSize;
+				box.isTrigger = true;
+				box.enabled = true;
+				description = "boxCenter=" + box.center.ToString("0.###") + ", boxSize=" + box.size.ToString("0.###");
+				return;
+			}
+
+			BoxCollider oldBox = target.GetComponent<BoxCollider>();
+			if (oldBox != null)
+			{
+				oldBox.enabled = false;
+				UnityEngine.Object.Destroy(oldBox);
+			}
+
+			SphereCollider sphere = target.GetComponent<SphereCollider>() ?? target.AddComponent<SphereCollider>();
+			sphere.radius = radius;
+			sphere.isTrigger = true;
+			sphere.enabled = true;
+			description = "radius=" + sphere.radius.ToString("0.###");
+		}
+
+		private static void ConfigureInteractionSurfacePickable(Transform interactionParent, GameObject target, ServiceFacilityDefinition definition, KeyValueObject keyValue, string requestKey, Industry industry, Load load)
+		{
+			if (!definition.attachInteractionSurfacePickable)
+			{
+				return;
+			}
+
+			Transform surface = ResolveInteractionSurfacePickableParent(interactionParent, target, definition);
+			if (surface == null)
+			{
+				return;
+			}
+
+			ServiceFacilityPickable pickable = surface.GetComponent<ServiceFacilityPickable>() ?? surface.gameObject.AddComponent<ServiceFacilityPickable>();
+			ConfigurePickable(pickable, definition, keyValue, requestKey, industry, load);
+			MakeCollidersClickable(surface.gameObject);
+			if (definition.debugLogging)
+			{
+				Main.Log("[ServiceFacility][Loader] interaction surface pickable for " + definition.EffectiveId +
+					" bound to " + TransformPath(surface));
+			}
+		}
+
+		private static Transform ResolveInteractionSurfacePickableParent(Transform interactionParent, GameObject target, ServiceFacilityDefinition definition)
+		{
+			if (target != null)
+			{
+				foreach (string transformName in CandidateStrings(definition.interactionPickableTransformName, definition.interactionPickableTransformNames))
+				{
+					Transform match = FindChildByName(target.transform, transformName);
+					if (match != null)
+					{
+						return match;
+					}
+				}
+			}
+
+			Transform surface = interactionParent;
+			int parentLevels = definition.interactionPickableParentLevels > 0 ? definition.interactionPickableParentLevels : 1;
+			for (int i = 0; i < parentLevels && surface != null && surface.parent != null; i++)
+			{
+				surface = surface.parent;
+			}
+			return surface;
 		}
 
 		private static void ConfigureTargetPickable(GameObject target, ServiceFacilityDefinition definition, KeyValueObject keyValue, string requestKey, Industry industry, Load load)
@@ -466,6 +1246,17 @@ namespace Toolshed.ServiceFacilities
 			}
 
 			ServiceFacilityPickable pickable = target.GetComponent<ServiceFacilityPickable>() ?? target.AddComponent<ServiceFacilityPickable>();
+			ConfigurePickable(pickable, definition, keyValue, requestKey, industry, load);
+			MakeCollidersClickable(target);
+		}
+
+		private static void ConfigurePickable(ServiceFacilityPickable pickable, ServiceFacilityDefinition definition, KeyValueObject keyValue, string requestKey, Industry industry, Load load)
+		{
+			if (pickable == null)
+			{
+				return;
+			}
+
 			pickable.keyValueObject = keyValue;
 			pickable.requestKey = requestKey;
 			pickable.displayTitle = string.IsNullOrWhiteSpace(definition.requestTitle) ? "Service Loader" : definition.requestTitle;
@@ -475,7 +1266,167 @@ namespace Toolshed.ServiceFacilities
 			pickable.load = load;
 			pickable.capacity = Mathf.Max(definition.facilityCapacity, 0f);
 			pickable.maxPickDistance = definition.maxPickDistance > 0f ? definition.maxPickDistance : 50f;
-			MakeCollidersClickable(target);
+		}
+
+		private static void RemoveTargetPickable(GameObject target)
+		{
+			if (target == null)
+			{
+				return;
+			}
+
+			ServiceFacilityPickable pickable = target.GetComponent<ServiceFacilityPickable>();
+			if (pickable != null)
+			{
+				UnityEngine.Object.Destroy(pickable);
+			}
+		}
+
+		private static void RemoveStaleToggles(GameObject target, GameObject serviceRoot, Transform desiredParent, string toggleName)
+		{
+			if (desiredParent == null || string.IsNullOrWhiteSpace(toggleName))
+			{
+				return;
+			}
+
+			HashSet<GameObject> removals = new HashSet<GameObject>();
+			CollectStaleToggles(target != null ? target.transform : null, desiredParent, toggleName, removals);
+			CollectStaleToggles(serviceRoot != null ? serviceRoot.transform : null, desiredParent, toggleName, removals);
+			foreach (GameObject removal in removals)
+			{
+				if (removal != null)
+				{
+					UnityEngine.Object.Destroy(removal);
+				}
+			}
+		}
+
+		private static void CollectStaleToggles(Transform root, Transform desiredParent, string toggleName, HashSet<GameObject> removals)
+		{
+			if (root == null || desiredParent == null || removals == null)
+			{
+				return;
+			}
+
+			Transform[] transforms = root.GetComponentsInChildren<Transform>(true);
+			for (int i = 0; i < transforms.Length; i++)
+			{
+				Transform candidate = transforms[i];
+				if (candidate == null || !string.Equals(candidate.name, toggleName, StringComparison.OrdinalIgnoreCase))
+				{
+					continue;
+				}
+				if (candidate.parent == desiredParent)
+				{
+					continue;
+				}
+
+				// Old service configs sometimes left a trigger parented to the scenery root or a previous
+				// outlet empty. Remove those so only the current chute owns the hover/click target.
+				removals.Add(candidate.gameObject);
+			}
+		}
+
+		private static Transform ResolveInteractionParent(GameObject serviceRoot, GameObject target, ServiceFacilityDefinition definition)
+		{
+			if (target != null)
+			{
+				foreach (string transformName in CandidateStrings(definition.interactionTransformName, definition.interactionTransformNames))
+				{
+					Transform match = FindChildByName(target.transform, transformName);
+					if (match != null)
+					{
+						return match;
+					}
+				}
+			}
+
+			if (definition.requireInteractionTransform && HasInteractionTransformCandidates(definition))
+			{
+				WarnOnce(definition.EffectiveId + ":interaction-transform", "waiting for interaction transform '" + definition.InteractionTransformDescription + "' on " + definition.TargetDescription);
+				return null;
+			}
+
+			return serviceRoot != null ? serviceRoot.transform : null;
+		}
+
+		private static string TransformPath(Transform transform)
+		{
+			if (transform == null)
+			{
+				return "<none>";
+			}
+
+			List<string> names = new List<string>();
+			Transform current = transform;
+			while (current != null)
+			{
+				names.Add(current.name);
+				current = current.parent;
+			}
+			names.Reverse();
+			return string.Join("/", names.ToArray());
+		}
+
+		private static bool HasInteractionTransformCandidates(ServiceFacilityDefinition definition)
+		{
+			if (!string.IsNullOrWhiteSpace(definition.interactionTransformName))
+			{
+				return true;
+			}
+			if (definition.interactionTransformNames == null)
+			{
+				return false;
+			}
+			for (int i = 0; i < definition.interactionTransformNames.Length; i++)
+			{
+				if (!string.IsNullOrWhiteSpace(definition.interactionTransformNames[i]))
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
+		private static Transform FindChildByName(Transform root, string name)
+		{
+			if (root == null || string.IsNullOrWhiteSpace(name))
+			{
+				return null;
+			}
+
+			Transform[] transforms = root.GetComponentsInChildren<Transform>(true);
+			for (int i = 0; i < transforms.Length; i++)
+			{
+				Transform transform = transforms[i];
+				if (transform != null && NamesEqual(transform.name, name))
+				{
+					return transform;
+				}
+			}
+			return null;
+		}
+
+		private static void RemoveServiceRootToggle(GameObject serviceRoot)
+		{
+			if (serviceRoot == null)
+			{
+				return;
+			}
+
+			List<GameObject> removals = new List<GameObject>();
+			for (int i = 0; i < serviceRoot.transform.childCount; i++)
+			{
+				Transform child = serviceRoot.transform.GetChild(i);
+				if (child != null && child.name.StartsWith("Toolshed Service Toggle", StringComparison.OrdinalIgnoreCase))
+				{
+					removals.Add(child.gameObject);
+				}
+			}
+			for (int i = 0; i < removals.Count; i++)
+			{
+				UnityEngine.Object.Destroy(removals[i]);
+			}
 		}
 
 		private static void MakeCollidersClickable(GameObject target)
@@ -496,24 +1447,83 @@ namespace Toolshed.ServiceFacilities
 			}
 		}
 
-		private static void PlaceServiceRoot(GameObject serviceRoot, ServiceFacilityDefinition definition, TrackSpan span)
+		private static bool PlaceServiceRoot(GameObject serviceRoot, ServiceFacilityDefinition definition, TrackSpan span, GameObject target)
 		{
+			if (TryPlaceServiceRootAtTransform(serviceRoot, definition, target))
+			{
+				return true;
+			}
+			if (definition.requireLoaderTransform && HasLoaderTransformCandidates(definition))
+			{
+				WarnOnce(definition.EffectiveId + ":loader-transform", "waiting for loader transform '" + definition.LoaderTransformDescription + "' on " + definition.TargetDescription);
+				return false;
+			}
+
 			if (definition.useLoaderWorldPosition)
 			{
 				serviceRoot.transform.position = definition.loaderWorldPosition;
 				serviceRoot.transform.rotation = Quaternion.Euler(definition.loaderWorldRotation);
-				return;
+				return true;
 			}
 
 			if (definition.loaderAtTrackSpanCenter && span != null)
 			{
 				serviceRoot.transform.position = span.GetCenterPoint().GameToWorld();
 				serviceRoot.transform.rotation = Quaternion.Euler(definition.loaderWorldRotation);
-				return;
+				return true;
 			}
 
 			serviceRoot.transform.localPosition = definition.loaderLocalPosition;
 			serviceRoot.transform.localRotation = Quaternion.Euler(definition.loaderLocalRotation);
+			return true;
+		}
+
+		private static bool TryPlaceServiceRootAtTransform(GameObject serviceRoot, ServiceFacilityDefinition definition, GameObject target)
+		{
+			if (serviceRoot == null || target == null || !HasLoaderTransformCandidates(definition))
+			{
+				return false;
+			}
+
+			foreach (string transformName in CandidateStrings(definition.loaderTransformName, definition.loaderTransformNames))
+			{
+				Transform match = FindChildByName(target.transform, transformName);
+				if (match == null)
+				{
+					continue;
+				}
+
+				serviceRoot.transform.position = match.TransformPoint(definition.loaderTransformLocalPosition);
+				serviceRoot.transform.rotation = match.rotation * Quaternion.Euler(definition.loaderTransformLocalRotation);
+				if (definition.debugLogging)
+				{
+					Main.Log("[ServiceFacility][Loader] service point for " + definition.EffectiveId +
+						" placed at " + TransformPath(match) +
+						", localOffset=" + definition.loaderTransformLocalPosition.ToString("0.###"));
+				}
+				return true;
+			}
+			return false;
+		}
+
+		private static bool HasLoaderTransformCandidates(ServiceFacilityDefinition definition)
+		{
+			if (!string.IsNullOrWhiteSpace(definition.loaderTransformName))
+			{
+				return true;
+			}
+			if (definition.loaderTransformNames == null)
+			{
+				return false;
+			}
+			for (int i = 0; i < definition.loaderTransformNames.Length; i++)
+			{
+				if (!string.IsNullOrWhiteSpace(definition.loaderTransformNames[i]))
+				{
+					return true;
+				}
+			}
+			return false;
 		}
 
 		private static void EnsureAnimations(ServiceFacilityDefinition definition, GameObject serviceRoot, GameObject target)
@@ -546,7 +1556,7 @@ namespace Toolshed.ServiceFacilities
 				string boolKey = string.IsNullOrWhiteSpace(animation.boolKey) ? "prepareLoad" : animation.boolKey;
 				ServiceFacilityAnimationDriver driver = serviceRoot.GetComponentsInChildren<ServiceFacilityAnimationDriver>(true)
 					.FirstOrDefault(item => item != null &&
-						string.Equals(item.animationMapKey, animation.animationMapKey, StringComparison.OrdinalIgnoreCase) &&
+					NamesEqual(item.animationMapKey, animation.animationMapKey) &&
 						string.Equals(item.boolKey, boolKey, StringComparison.OrdinalIgnoreCase));
 				if (driver == null)
 				{
@@ -602,7 +1612,7 @@ namespace Toolshed.ServiceFacilities
 
 				ServiceFacilityStorageAnimationDriver driver = serviceRoot.GetComponentsInChildren<ServiceFacilityStorageAnimationDriver>(true)
 					.FirstOrDefault(item => item != null &&
-						string.Equals(item.animationMapKey, animation.animationMapKey, StringComparison.OrdinalIgnoreCase));
+						NamesEqual(item.animationMapKey, animation.animationMapKey));
 				if (driver == null)
 				{
 					GameObject driverObject = new GameObject("Toolshed Storage Animation - " + animation.animationMapKey);
@@ -703,9 +1713,10 @@ namespace Toolshed.ServiceFacilities
 				driver.createVisibleStream = effect.createVisibleStream;
 				driver.streamUsesWorldDown = effect.streamUsesWorldDown;
 				driver.streamLocalStart = effect.streamLocalStart;
-				driver.streamLocalEnd = effect.streamLocalEnd == Vector3.zero ? new Vector3(0f, -2.25f, 0f) : effect.streamLocalEnd;
+				driver.streamLocalEnd = effect.streamLocalEnd;
 				driver.streamLength = effect.streamLength > 0f ? effect.streamLength : 2.25f;
 				driver.streamWidth = effect.streamWidth > 0f ? effect.streamWidth : 0.12f;
+				driver.streamAnimationSpeed = effect.streamAnimationSpeed;
 				driver.streamColor = effect.streamColor.a > 0f ? effect.streamColor : new Color(0.16f, 0.09f, 0.035f, 0.95f);
 				driver.debugOriginMarker = effect.debugOriginMarker;
 				driver.clearOnStop = effect.clearOnStop;
@@ -750,7 +1761,7 @@ namespace Toolshed.ServiceFacilities
 		{
 			if (!string.IsNullOrWhiteSpace(primary))
 			{
-				yield return primary;
+				yield return primary.Trim();
 			}
 			if (aliases == null)
 			{
@@ -760,7 +1771,7 @@ namespace Toolshed.ServiceFacilities
 			{
 				if (!string.IsNullOrWhiteSpace(aliases[i]))
 				{
-					yield return aliases[i];
+					yield return aliases[i].Trim();
 				}
 			}
 		}
@@ -789,19 +1800,25 @@ namespace Toolshed.ServiceFacilities
 			return null;
 		}
 
-		private static TrackSpan ResolveTrackSpan(ServiceFacilityDefinition definition)
+		private static TrackSpan[] ResolveTrackSpans(ServiceFacilityDefinition definition)
 		{
+			List<TrackSpan> spans = new List<TrackSpan>();
+			TrackSpan[] allSpans = UnityEngine.Object.FindObjectsOfType<TrackSpan>(true);
 			foreach (string spanId in CandidateStrings(definition.serviceTrackSpanId, definition.serviceTrackSpanIds))
 			{
-				TrackSpan span = UnityEngine.Object.FindObjectsOfType<TrackSpan>(true)
-					.FirstOrDefault(item => string.Equals(item.id, spanId, StringComparison.OrdinalIgnoreCase));
-				if (span != null)
+				TrackSpan span = allSpans.FirstOrDefault(item => string.Equals(item.id, spanId, StringComparison.OrdinalIgnoreCase));
+				if (span != null && !spans.Contains(span))
 				{
-					return span;
+					spans.Add(span);
 				}
 			}
 
-			return null;
+			return spans.ToArray();
+		}
+
+		private static TrackSpan FirstTrackSpan(TrackSpan[] spans)
+		{
+			return spans != null && spans.Length > 0 ? spans[0] : null;
 		}
 
 		private static void WarnOnce(string key, string message)
@@ -828,6 +1845,12 @@ namespace Toolshed.ServiceFacilities
 		public string[] targetObjectNames;
 		public string modelIdentifier;
 		public string[] modelIdentifiers;
+		public bool useAuthoredLoadPoints = true;
+		public bool requireAuthoredLoadPoints;
+		public string facilityId;
+		public string storageId;
+		public string loadPointId;
+		public string[] loadPointIds;
 		public string serviceLoadId;
 		public string sourceIndustryId;
 		public string[] sourceIndustryIds;
@@ -835,22 +1858,52 @@ namespace Toolshed.ServiceFacilities
 		public string[] serviceTrackSpanIds;
 		public bool infiniteSupply;
 		public float facilityCapacity;
+		public float initialStorage;
 		public float loadingRate;
 		public float serviceRadius = 0.8f;
 		public float maximumSpeedMph = 5f;
 		public bool requirePlayerOwnedCars = true;
+		public bool configureReceivingUnloader;
+		public bool configureInterchangeLoader;
+		public bool createMissingIndustryComponents;
+		public bool canPurchaseThroughInterchange;
+		public float purchaseDelayDays;
+		public string carTypeFilterQuery;
 		public bool debugLogging;
 		public bool enableExtendedTenderSearch;
 		public float extendedSearchRadius = 12f;
 		public float extendedLoadTargetRadius = 8f;
+		public bool useServiceTargetBox;
+		public Vector3 serviceTargetBoxCenter;
+		public Vector3 serviceTargetBoxSize;
+		public bool restrictLoadingToServiceTrackSpan;
+		public float serviceTrackRouteLimit = 80f;
 		public bool useLoaderWorldPosition;
 		public Vector3 loaderWorldPosition;
 		public Vector3 loaderWorldRotation;
 		public bool loaderAtTrackSpanCenter;
+		public string loaderTransformName;
+		public string[] loaderTransformNames;
+		public bool requireLoaderTransform;
+		public Vector3 loaderTransformLocalPosition;
+		public Vector3 loaderTransformLocalRotation;
+		public bool attachTargetPickable = true;
 		public bool createInteractionTrigger;
+		public string interactionTransformName;
+		public string[] interactionTransformNames;
+		public bool requireInteractionTransform;
+		public bool attachInteractionSurfacePickable = true;
+		public string interactionPickableTransformName;
+		public string[] interactionPickableTransformNames;
+		public int interactionPickableParentLevels = 1;
 		public Vector3 loaderLocalPosition;
 		public Vector3 loaderLocalRotation;
+		public Vector3 interactionLocalPosition;
+		public Vector3 interactionLocalRotation;
 		public float interactionRadius = 3f;
+		public bool useBoxInteractionCollider;
+		public Vector3 interactionBoxCenter;
+		public Vector3 interactionBoxSize;
 		public string requestTitle;
 		public string requestMessageTrue;
 		public string requestMessageFalse;
@@ -917,6 +1970,82 @@ namespace Toolshed.ServiceFacilities
 				}
 				return modelIdentifier;
 			}
+		}
+
+		public string InteractionTransformDescription
+		{
+			get
+			{
+				if (!string.IsNullOrWhiteSpace(interactionTransformName))
+				{
+					return interactionTransformName;
+				}
+				if (interactionTransformNames != null && interactionTransformNames.Length > 0)
+				{
+					return string.Join(", ", interactionTransformNames);
+				}
+				return interactionTransformName;
+			}
+		}
+
+		public string LoaderTransformDescription
+		{
+			get
+			{
+				if (!string.IsNullOrWhiteSpace(loaderTransformName))
+				{
+					return loaderTransformName;
+				}
+				if (loaderTransformNames != null && loaderTransformNames.Length > 0)
+				{
+					return string.Join(", ", loaderTransformNames);
+				}
+				return loaderTransformName;
+			}
+		}
+
+		public string LoadPointDescription
+		{
+			get
+			{
+				if (!string.IsNullOrWhiteSpace(loadPointId))
+				{
+					return loadPointId;
+				}
+				if (loadPointIds != null && loadPointIds.Length > 0)
+				{
+					return string.Join(", ", loadPointIds);
+				}
+				return loadPointId;
+			}
+		}
+
+		public bool HasLoadPointFilter
+		{
+			get
+			{
+				if (!string.IsNullOrWhiteSpace(loadPointId))
+				{
+					return true;
+				}
+				if (loadPointIds == null)
+				{
+					return false;
+				}
+				for (int i = 0; i < loadPointIds.Length; i++)
+				{
+					if (!string.IsNullOrWhiteSpace(loadPointIds[i]))
+					{
+						return true;
+					}
+				}
+				return false;
+			}
+		}
+
+		public bool UseBoxInteractionCollider
+		{
+			get { return useBoxInteractionCollider || interactionBoxSize != Vector3.zero; }
 		}
 
 		public bool UsesInfiniteSupply
@@ -1048,6 +2177,7 @@ namespace Toolshed.ServiceFacilities
 		public Vector3 streamLocalEnd = new Vector3(0f, -2.25f, 0f);
 		public float streamLength = 2.25f;
 		public float streamWidth = 0.12f;
+		public float streamAnimationSpeed;
 		public Color streamColor = new Color(0.16f, 0.09f, 0.035f, 0.95f);
 		public bool debugOriginMarker;
 		public bool clearOnStop = true;
