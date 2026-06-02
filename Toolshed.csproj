@@ -25,6 +25,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="bin\**\*.cs" />
+    <Compile Remove="obj\**\*.cs" />
+    <Compile Remove="RailLoaderSelectiveInterchanges\**\*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Reference Include="$(UnityModManagerReferenceName)" Condition="Exists('$(UnityModManagerAssemblyPath)')">
       <HintPath>$(UnityModManagerAssemblyPath)</HintPath>
       <Private>false</Private>
@@ -97,7 +103,7 @@
     <None Include="ServiceFacility_Audit.md">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Include="SCAssetPacks\**\*">
+    <None Include="SCAssetPacks\**\*" Exclude="SCAssetPacks\ALWLoaders\**\*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <TargetPath>SCAssetPacks\%(RecursiveDir)%(Filename)%(Extension)</TargetPath>
     </None>
@@ -130,7 +136,7 @@
     <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="Info.json" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="false" />
     <ItemGroup>
-      <ToolshedAssetPackFiles Include="SCAssetPacks\**\*" />
+      <ToolshedAssetPackFiles Include="SCAssetPacks\**\*" Exclude="SCAssetPacks\ALWLoaders\**\*" />
       <ToolshedExampleFiles Include="Examples\**\*" />
     </ItemGroup>
     <Copy SourceFiles="README.md" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="false" />

@@ -37,9 +37,11 @@ Mod projects and assets:
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\Examples`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\SCAssetPacks`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\src\ServiceFacilities\ServiceFacilityRuntime.cs`
+- `C:\Hrogers_Railroader_mods_Projects\Toolshed\src\ServiceFacilities\ServiceFacilityDefinitionComponents.cs`
 - `C:\Hrogers_Railroader_mods_Projects\Rail\API\LoaderAPI.cs`
 - `C:\Hrogers_Railroader_mods_Projects\Rail\API\SceneryAPI.cs`
 - `C:\Hrogers_Railroader_mods_Projects\Rail\Data\Operations\FuseOperationsDefinition.cs`
+- `C:\Hrogers_Railroader_mods_Projects\Decompiled DLLs Not BASE GAME\LegoCompository\LegosLibraryOfStuff\*.cs`
 - `C:\Users\roger\Downloads\Prefabs for Hunter.unitypackage`
 - `C:\Users\roger\Downloads\Prefabs for Hunter (1).unitypackage`
 
@@ -81,6 +83,7 @@ Locomotive consumption flow:
 - Load IDs match by exact string equality against `LoadSlot.RequiredLoadIdentifier`.
 - Loading speed is effectively `outputRate` units per real second because the vanilla loop calls `Load(..., 1f)`.
 - Animation is key-value driven with `request`, `prepareLoad`, `canLoad`, `isLoading`, and `animateLoad`.
+- Vanilla authoring uses definition components and component builders for physical controls. `ToggleAnimationComponentBuilder` attaches a click target to the selected collider object and a `KeyValueBoolAnimator` to the model animator object; the route graph does not need to carry every chute/pivot detail.
 - Water visual flow is not part of `CarLoadTargetLoader`; the base game uses a separate key-driven `WaterCylinderController` with a VFX rate set from the bool-driven flow value.
 - Generic particle effects can reuse the same key-value pattern. Toolshed now supports `particleEffects` entries that target an existing particle object, create a runtime particle system, and optionally draw a visible stream fallback for dark liquids.
 - Storage capacity is enforced by industry components such as `IndustryUnloader.maxStorage` and `IndustryLoaderBase.maxStorage`, not by the physical `CarLoadTargetLoader`.
@@ -109,9 +112,12 @@ Implemented in Toolshed:
 - Keep vanilla `InterchangedIndustryLoader` for purchase/interchange, except water.
 - Add one reusable wrapper: `Toolshed.ServiceFacilities.UniversalServiceFacilityComponent`.
 - Add one runtime bridge: `Toolshed.ServiceFacilities.ServiceFacilityRuntime`.
-- Let FUSE place plain scenery, then bind service behavior from `ToolshedServiceFacilities.json`.
+- Add editor-authored scenery definition components:
+  - `ToolshedServiceStorage` stores the asset-side default load id, capacity, infinite/finite flag, and default loading rate.
+  - `ToolshedServiceLoadPoint` marks one physical chute, pipe, hose, or standpipe outlet. Toolshed creates one vanilla loader/sequencer/click target/effect bridge for each load point.
+- Let FUSE place normal scenery, then bind only route-specific data from `ToolshedServiceFacilities.json`: placed scenery id, source industry id, service span id, and optional `loadPointId` for multi-outlet assets.
 - Allow alias arrays for scenery ids and span ids so service definitions can survive FUSE id renames during testing.
-- Attach a Toolshed pickable to the visible scenery root so vanilla mouse-over starts from the asset mesh and still finds a service tooltip/action.
+- Prefer load-point-local click colliders over root pickables for new assets. This keeps dual chutes independent and prevents a tender hover from showing the loader action.
 - Use `storageAnimations` for visible inventory, such as sampling the wood pile clip from empty to full based on `Industry.Storage`.
 - Use `particleEffects` for custom oil/diesel/solid loading effects. Bunker-C test config uses `animateLoad` plus `requiredBoolKey = "request"` so flow follows the vanilla visible-loading state and still requires the pipe to be down.
 - Use `requireServiceCondition` for loaders that must be physically in position before transfer. The bunker-C test loader requires `request = true`, which is the pipe-down state.
@@ -189,7 +195,7 @@ Remaining:
 - [ ] Validate `WoodShed` prefab identifier in-game.
 - [ ] Validate `ToolshedServiceFacilities.json` bindings in-game with FUSE-placed assets.
 - [ ] Validate the same bindings from a FUSE `world.scenery` package.
-- [ ] Receive/update ALW tank-loader prefab with the real `FuelPoint` empty at the spout tip. The FUSE test config now requires that real parent and will not show a guessed fallback stream.
+- [x] Receive/update ALW loader prefabs with real outlet empties parented to the moving parts. Current names are `FuelLoaderFill` for the tank loader, `CoalStartUnity` and `CoalStartUnity.001` for the dual-track tower, and `UnitySingleLoadChute` for the single-track tower. The FUSE/test configs should require real parents and avoid guessed fallback stream origins.
 - [ ] Tune `bunker-c` `costPerUnit` later.
 - [ ] Tune wood consumption after live testing.
 
@@ -200,10 +206,11 @@ Created:
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\README.md`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\ServiceFacility_Audit.md`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\Examples\service-facility-setup-guide.md`
+- `C:\Hrogers_Railroader_mods_Projects\Toolshed\src\ServiceFacilities\ServiceFacilityDefinitionComponents.cs`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\src\ServiceFacilities\*.cs`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\src\OilWoodFiring\*.cs`
-- `C:\Hrogers_Railroader_mods_Projects\Toolshed\SCAssetPacks\ALWLoaders\*`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\SCAssetPacks\WoodShed\*`
+- ALW loader models are no longer hosted by Toolshed; they should come from `ALW.SceneryAssets` or another external scenery asset pack.
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\FuseServiceFacilityTest\Info.json`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\FuseServiceFacilityTest\service-facility-test.fuse.json`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\FuseServiceFacilityTest\ToolshedServiceFacilities.json`
@@ -215,6 +222,7 @@ Modified:
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\src\ServiceFacilities\ServiceFacilityRuntime.cs`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\src\ServiceFacilities\UniversalServiceFacilityComponent.cs`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\src\ServiceFacilities\ServiceFacilityParticleEffectDriver.cs`
+- `C:\Hrogers_Railroader_mods_Projects\Toolshed\src\ServiceFacilities\ServiceFacilityDefinitionComponents.cs`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\Examples\service-facility-setup-guide.md`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\ServiceFacility_Audit.md`
 - `C:\Hrogers_Railroader_mods_Projects\Toolshed\FuseServiceFacilityTest\ToolshedServiceFacilities.json`
@@ -242,7 +250,7 @@ For each finished service asset using explicit Unity components:
 5. Set `serviceLoadId`.
 6. Match key names between controls, sequencer, and loader.
 7. If the loader has a physical service position, set `requireServiceCondition` and point it at the key that means pipe/chute/hose down.
-8. For oil or other visible flow, add a particle object to the prefab or configure `particleEffects` to create one at runtime. Best practice for community assets is a normal Unity empty at the exact spout/chute tip, parented to the moving pipe/chute. Use `Toolshed_FlowOrigin` as the generic name, or list asset-specific names such as `FuelPoint`, `Chute.CoalStart`, `Chute.CoalStart.001`, or `SingleLoadChute` in JSON. Avoid custom `ToolshedFlowOrigin` component entries in FUSE-mounted asset-pack definitions because FUSE strips unsupported component kinds. Use `debugOriginMarker` only while lining up the outlet, then turn it off. Use `streamLength` to adjust the visible oil fall distance, `createVisibleStream` when particle-only oil is too dark or hidden against the asset, and `requireParentTransform` when the effect should stay hidden until a real parent transform exists.
+8. For oil or other visible flow, add a particle object to the prefab or configure `particleEffects` to create one at runtime. Best practice for community assets is a normal Unity empty at the exact spout/chute tip, parented to the moving pipe/chute. Use `Toolshed_FlowOrigin` as the generic name, or list asset-specific names such as `FuelLoaderFill`, `CoalStartUnity`, `CoalStartUnity.001`, or `UnitySingleLoadChute` in JSON. Avoid custom `ToolshedFlowOrigin` component entries in FUSE-mounted asset-pack definitions because FUSE strips unsupported component kinds. Use `debugOriginMarker` only while lining up the outlet, then turn it off. Use `streamLength` to adjust the visible oil fall distance, `createVisibleStream` when particle-only oil is too dark or hidden against the asset, and `requireParentTransform` when the effect should stay hidden until a real parent transform exists.
 9. For finite storage, assign a stable `Industry` and `linkedIndustry`.
 10. Add `IndustryUnloader` for delivered storage.
 11. Add `Interchange` plus `InterchangedIndustryLoader` for off-map purchase.

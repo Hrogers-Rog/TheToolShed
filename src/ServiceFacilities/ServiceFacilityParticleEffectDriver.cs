@@ -44,15 +44,18 @@ namespace Toolshed.ServiceFacilities
 		public Vector3 streamLocalEnd = new Vector3(0f, -2.25f, 0f);
 		public float streamLength = 2.25f;
 		public float streamWidth = 0.12f;
+		public float streamAnimationSpeed;
 		public Color streamColor = new Color(0.16f, 0.09f, 0.035f, 0.95f);
 		public bool debugOriginMarker;
 		public bool clearOnStop = true;
 		public bool debugLogging;
 
 		private readonly List<ParticleSystem> _particleSystems = new List<ParticleSystem>();
+		private readonly List<GameObject> _streamChunkObjects = new List<GameObject>();
 		private readonly List<IDisposable> _observers = new List<IDisposable>();
 		private Material _createdMaterial;
 		private Material _createdSolidMaterial;
+		private Material _createdChunkMaterial;
 		private GameObject _root;
 		private GameObject _createdParticleObject;
 		private GameObject _streamObject;
@@ -73,6 +76,9 @@ namespace Toolshed.ServiceFacilities
 		private bool _loggedBlockedByFallbackParent;
 		private bool _lastShouldPlay;
 		private bool _hasLastShouldPlay;
+		private bool _disabledAfterError;
+		private bool _streamChunksActive;
+		private float _streamChunkPhase;
 		private float _nextParentRetryTime;
 		private float _nextFlowOriginFollowRetryTime;
 		private float _nextResolveRetryTime;
@@ -81,7 +87,7 @@ namespace Toolshed.ServiceFacilities
 		{
 			ResolveParticleSystems();
 			EnsureObservers();
-			ApplyPlaybackState();
+			SafeApplyPlaybackState();
 		}
 
 		private void OnDisable()
@@ -102,6 +108,12 @@ namespace Toolshed.ServiceFacilities
 				Destroy(_createdSolidMaterial);
 				_createdSolidMaterial = null;
 			}
+			if (_createdChunkMaterial != null)
+			{
+				Destroy(_createdChunkMaterial);
+				_createdChunkMaterial = null;
+			}
+			DestroyStreamChunks();
 			if (_runtimeFlowOriginObject != null)
 			{
 				Destroy(_runtimeFlowOriginObject);
@@ -126,7 +138,7 @@ namespace Toolshed.ServiceFacilities
 				RetryFlowOriginFollowBinding();
 				RetryParentBinding();
 			}
-			ApplyPlaybackState();
+			SafeApplyPlaybackState();
 		}
 
 		private void LateUpdate()
@@ -135,7 +147,7 @@ namespace Toolshed.ServiceFacilities
 			{
 				_nextResolveRetryTime = Time.unscaledTime + 1f;
 				ResolveParticleSystems();
-				ApplyPlaybackState();
+				SafeApplyPlaybackState();
 			}
 			RetryFlowOriginFollowBinding();
 			RetryParentBinding();
@@ -143,11 +155,36 @@ namespace Toolshed.ServiceFacilities
 			{
 				UpdateStreamPositions();
 			}
+			if (_streamChunksActive)
+			{
+				float visualSpeed = streamAnimationSpeed > 0f ? streamAnimationSpeed : startSpeed;
+				_streamChunkPhase = Mathf.Repeat(_streamChunkPhase + Time.deltaTime * Mathf.Max(0.05f, visualSpeed), 1f);
+				UpdateStreamChunkPositions();
+			}
 		}
 
 		private void PropertyChanged(Value value)
 		{
-			ApplyPlaybackState();
+			SafeApplyPlaybackState();
+		}
+
+		private void SafeApplyPlaybackState()
+		{
+			if (_disabledAfterError)
+			{
+				return;
+			}
+			try
+			{
+				ApplyPlaybackState();
+			}
+			catch (Exception ex)
+			{
+				_disabledAfterError = true;
+				StopAll(true);
+				Main.Warn("[ServiceFacility][Loader] particle effect disabled after exception on " +
+					name + ": " + ex.GetType().Name + " - " + ex.Message);
+			}
 		}
 
 		private bool ShouldPlay()
@@ -200,7 +237,11 @@ namespace Toolshed.ServiceFacilities
 				AddParticleSystems(_createdParticleObject);
 			}
 
-			if (_particleSystems.Count == 0 && createIfMissing)
+			if (createIfMissing && ShouldUseChunkStream())
+			{
+				EnsureChunkStream(root);
+			}
+			if (_particleSystems.Count == 0 && createIfMissing && !ShouldUseChunkStream())
 			{
 				ParticleSystem created = CreateParticleSystem(root);
 				if (created != null)
@@ -208,7 +249,7 @@ namespace Toolshed.ServiceFacilities
 					_particleSystems.Add(created);
 				}
 			}
-			if (createVisibleStream)
+			if (ShouldDrawSolidStream())
 			{
 				EnsureVisibleStream(root);
 			}
@@ -232,15 +273,19 @@ namespace Toolshed.ServiceFacilities
 			{
 				return true;
 			}
-			if (createVisibleStream && (_streamObject == null || _streamRenderer == null))
+			if (ShouldDrawSolidStream() && (_streamObject == null || _streamRenderer == null))
 			{
 				return true;
 			}
-			if (createVisibleStream && (_streamMeshObject == null || _streamMeshRenderer == null))
+			if (ShouldDrawSolidStream() && (_streamMeshObject == null || _streamMeshRenderer == null))
 			{
 				return true;
 			}
-			if (createIfMissing && _createdParticleObject == null && _particleSystems.Count == 0)
+			if (ShouldUseChunkStream() && _streamChunkObjects.Count == 0)
+			{
+				return true;
+			}
+			if (createIfMissing && !ShouldUseChunkStream() && _createdParticleObject == null && _particleSystems.Count == 0)
 			{
 				return true;
 			}
@@ -411,7 +456,7 @@ namespace Toolshed.ServiceFacilities
 			_streamRenderer.endColor = streamColor;
 			UpdateStreamPositions();
 			_streamRenderer.enabled = false;
-			EnsureVisibleStreamMesh(parent);
+			EnsureVisibleStreamMesh(_streamAnchor != null ? _streamAnchor : parent);
 
 			if (debugLogging && created)
 			{
@@ -450,6 +495,162 @@ namespace Toolshed.ServiceFacilities
 			}
 			_streamMeshObject.SetActive(false);
 			UpdateStreamPositions();
+		}
+
+		private void EnsureChunkStream(GameObject root)
+		{
+			bool usedFallback;
+			Transform parent = ResolveParent(root, out usedFallback);
+			_usingFallbackParent |= usedFallback;
+			if (parent == null)
+			{
+				return;
+			}
+
+			_streamAnchor = parent;
+			EnsureDebugOriginMarker(parent);
+			if (_streamChunkObjects.Count == 0)
+			{
+				for (int i = 0; i < 24; i++)
+				{
+					GameObject chunk = GameObject.CreatePrimitive(PrimitiveType.Cube);
+					chunk.name = "Toolshed Coal Chunk";
+					chunk.transform.SetParent(parent, false);
+					ApplyLayerFromParent(chunk, parent);
+					Collider collider = chunk.GetComponent<Collider>();
+					if (collider != null)
+					{
+						Destroy(collider);
+					}
+					Renderer renderer = chunk.GetComponent<Renderer>();
+					if (renderer != null)
+					{
+						renderer.material = CreateChunkMaterial();
+						renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+						renderer.receiveShadows = true;
+						renderer.allowOcclusionWhenDynamic = false;
+					}
+					chunk.SetActive(false);
+					_streamChunkObjects.Add(chunk);
+				}
+				if (debugLogging)
+				{
+					Main.Log("[ServiceFacility][Loader] coal chunk stream created anchor=" + parent.name +
+						", parentLayer=" + parent.gameObject.layer +
+						", chunkLayer=" + _streamChunkObjects[0].layer +
+						", start=" + streamLocalStart +
+						", end=" + EffectiveLocalStreamEnd() +
+						", drop=" + streamLength.ToString("0.###") +
+						", width=" + streamWidth.ToString("0.###"));
+				}
+			}
+			UpdateStreamChunkPositions();
+		}
+
+		private void UpdateStreamChunkPositions()
+		{
+			if (_streamChunkObjects.Count == 0)
+			{
+				return;
+			}
+
+			Vector3 start = streamLocalStart;
+			Vector3 chuteEnd = EffectiveLocalStreamEnd();
+			Vector3 dropEnd = chuteEnd + EffectiveLocalWorldDown() * Mathf.Max(0f, streamLength);
+			float chuteLength = Vector3.Distance(start, chuteEnd);
+			float dropLength = Vector3.Distance(chuteEnd, dropEnd);
+			float totalLength = chuteLength + dropLength;
+			if (totalLength <= 0.01f)
+			{
+				chuteEnd = start + Vector3.down * Mathf.Max(0.01f, streamLength);
+				chuteLength = Vector3.Distance(start, chuteEnd);
+				totalLength = chuteLength;
+				dropLength = 0f;
+			}
+			float baseSize = Mathf.Max(0.015f, streamWidth * 0.45f);
+			for (int i = 0; i < _streamChunkObjects.Count; i++)
+			{
+				GameObject chunk = _streamChunkObjects[i];
+				if (chunk == null)
+				{
+					continue;
+				}
+				float t = Mathf.Repeat(_streamChunkPhase + (float)i / _streamChunkObjects.Count, 1f);
+				float distance = t * totalLength;
+				Vector3 segmentStart = start;
+				Vector3 segmentEnd = chuteEnd;
+				float segmentLength = chuteLength;
+				if (dropLength > 0.01f && distance > chuteLength)
+				{
+					segmentStart = chuteEnd;
+					segmentEnd = dropEnd;
+					segmentLength = dropLength;
+					distance -= chuteLength;
+				}
+				Vector3 direction = segmentEnd - segmentStart;
+				if (direction.sqrMagnitude <= 0.0001f)
+				{
+					direction = Vector3.down;
+					segmentLength = Mathf.Max(0.01f, segmentLength);
+				}
+				else
+				{
+					direction.Normalize();
+				}
+				Vector3 side = Vector3.Cross(direction, Vector3.up);
+				if (side.sqrMagnitude <= 0.001f)
+				{
+					side = Vector3.Cross(direction, Vector3.right);
+				}
+				side.Normalize();
+				Vector3 up = Vector3.Cross(side, direction).normalized;
+				float segmentT = segmentLength <= 0.01f ? 0f : Mathf.Clamp01(distance / segmentLength);
+				float jitterA = (((i * 37) % 11) - 5) / 5f;
+				float jitterB = (((i * 53) % 13) - 6) / 6f;
+				Vector3 position = Vector3.Lerp(segmentStart, segmentEnd, segmentT) +
+					side * jitterA * streamWidth * 0.35f +
+					up * jitterB * streamWidth * 0.25f;
+				float scale = baseSize * (0.65f + ((i * 17) % 7) * 0.08f);
+				chunk.transform.localPosition = position;
+				chunk.transform.localRotation = Quaternion.LookRotation(direction, up) *
+					Quaternion.Euler(i * 29f, i * 47f, i * 71f);
+				chunk.transform.localScale = new Vector3(scale * 1.25f, scale * 0.75f, scale);
+			}
+		}
+
+		private void SetChunkStreamActive(bool active)
+		{
+			bool wasActive = _streamChunksActive;
+			_streamChunksActive = active;
+			for (int i = 0; i < _streamChunkObjects.Count; i++)
+			{
+				if (_streamChunkObjects[i] != null)
+				{
+					_streamChunkObjects[i].SetActive(active);
+				}
+			}
+			if (active)
+			{
+				UpdateStreamChunkPositions();
+			}
+			if (debugLogging && wasActive != active)
+			{
+				Main.Log("[ServiceFacility][Loader] coal chunk stream " + (active ? "shown" : "hidden") +
+					" " + ChunkDebugText());
+			}
+		}
+
+		private void DestroyStreamChunks()
+		{
+			for (int i = 0; i < _streamChunkObjects.Count; i++)
+			{
+				if (_streamChunkObjects[i] != null)
+				{
+					Destroy(_streamChunkObjects[i]);
+				}
+			}
+			_streamChunkObjects.Clear();
+			_streamChunksActive = false;
 		}
 
 		private void ConfigureParticleSystem(ParticleSystem particleSystem)
@@ -579,6 +780,57 @@ namespace Toolshed.ServiceFacilities
 			SetMaterialColorIfPresent(_createdSolidMaterial, "_Color", streamColor);
 			SetMaterialColorIfPresent(_createdSolidMaterial, "_TintColor", streamColor);
 			return _createdSolidMaterial;
+		}
+
+		private Material CreateChunkMaterial()
+		{
+			if (_createdChunkMaterial != null)
+			{
+				return _createdChunkMaterial;
+			}
+
+			Shader shader = Shader.Find("Unlit/Color");
+			if (shader == null)
+			{
+				shader = Shader.Find("Sprites/Default");
+			}
+			if (shader == null)
+			{
+				shader = Shader.Find("Standard");
+			}
+			if (shader == null)
+			{
+				return CreateParticleMaterial();
+			}
+
+			Color color = VisibleChunkColor(overrideStartColor ? startColor : streamColor);
+			_createdChunkMaterial = new Material(shader);
+			_createdChunkMaterial.color = color;
+			SetMaterialColorIfPresent(_createdChunkMaterial, "_BaseColor", color);
+			SetMaterialColorIfPresent(_createdChunkMaterial, "_Color", color);
+			SetMaterialColorIfPresent(_createdChunkMaterial, "_TintColor", color);
+			return _createdChunkMaterial;
+		}
+
+		private static Color VisibleChunkColor(Color color)
+		{
+			return new Color(
+				Mathf.Max(color.r, 0.09f),
+				Mathf.Max(color.g, 0.08f),
+				Mathf.Max(color.b, 0.065f),
+				Mathf.Max(color.a, 1f));
+		}
+
+		private bool ShouldUseChunkStream()
+		{
+			return createIfMissing &&
+				!streamUsesWorldDown &&
+				(streamLocalStart != Vector3.zero || streamLocalEnd != Vector3.zero);
+		}
+
+		private bool ShouldDrawSolidStream()
+		{
+			return createVisibleStream && !ShouldUseChunkStream();
 		}
 
 		private Transform ResolveParent(GameObject root, out bool usedFallback)
@@ -724,6 +976,17 @@ namespace Toolshed.ServiceFacilities
 			for (int i = 0; i < origins.Length; i++)
 			{
 				ServiceFacilityFlowOrigin origin = origins[i];
+				if (origin != null &&
+					MatchesFlowOriginId(origin.originId) &&
+					!string.IsNullOrWhiteSpace(flowOriginId) &&
+					string.Equals(origin.transform.name, flowOriginId, StringComparison.OrdinalIgnoreCase))
+				{
+					return origin;
+				}
+			}
+			for (int i = 0; i < origins.Length; i++)
+			{
+				ServiceFacilityFlowOrigin origin = origins[i];
 				if (origin != null && MatchesFlowOriginId(origin.originId))
 				{
 					return origin;
@@ -819,10 +1082,21 @@ namespace Toolshed.ServiceFacilities
 			}
 			if (_streamMeshObject != null)
 			{
-				_streamMeshObject.transform.SetParent(parent, false);
-				ApplyLayerFromParent(_streamMeshObject, parent);
+				Transform streamParent = _streamAnchor != null ? _streamAnchor : parent;
+				_streamMeshObject.transform.SetParent(streamParent, false);
+				ApplyLayerFromParent(_streamMeshObject, streamParent);
+			}
+			for (int i = 0; i < _streamChunkObjects.Count; i++)
+			{
+				GameObject chunk = _streamChunkObjects[i];
+				if (chunk != null)
+				{
+					chunk.transform.SetParent(parent, false);
+					ApplyLayerFromParent(chunk, parent);
+				}
 			}
 			UpdateStreamPositions();
+			UpdateStreamChunkPositions();
 		}
 
 		private Vector3 LocalPositionForParent(Transform parent)
@@ -880,7 +1154,8 @@ namespace Toolshed.ServiceFacilities
 			{
 				return;
 			}
-			child.layer = parent.gameObject.layer;
+			int parentLayer = parent.gameObject.layer;
+			child.layer = parentLayer == global::ObjectPicker.LayerClickable ? 0 : parentLayer;
 		}
 
 		private IEnumerable<string> ParentCandidateNames()
@@ -967,7 +1242,7 @@ namespace Toolshed.ServiceFacilities
 			else
 			{
 				start = streamLocalStart;
-				end = streamLocalEnd;
+				end = EffectiveLocalStreamEnd();
 			}
 
 			if (_streamRenderer != null)
@@ -1012,6 +1287,24 @@ namespace Toolshed.ServiceFacilities
 				Mathf.Max(0.001f, streamWidth));
 		}
 
+		private Vector3 EffectiveLocalStreamEnd()
+		{
+			return streamLocalStart == Vector3.zero && streamLocalEnd == Vector3.zero
+				? new Vector3(0f, -Mathf.Max(0.01f, streamLength), 0f)
+				: streamLocalEnd;
+		}
+
+		private Vector3 EffectiveLocalWorldDown()
+		{
+			Transform anchor = _streamAnchor != null ? _streamAnchor : transform;
+			if (anchor == null)
+			{
+				return Vector3.down;
+			}
+			Vector3 localDown = anchor.InverseTransformDirection(Vector3.down);
+			return localDown.sqrMagnitude <= 0.0001f ? Vector3.down : localDown.normalized;
+		}
+
 		private void LogPlaybackStateIfChanged(bool shouldPlay)
 		{
 			if (!debugLogging)
@@ -1032,6 +1325,8 @@ namespace Toolshed.ServiceFacilities
 				", anchor=" + (_streamAnchor != null ? _streamAnchor.name : "<none>") +
 				", stream=" + (_streamRenderer != null ? "ready" : "missing") +
 				", mesh=" + (_streamMeshObject != null ? "ready" : "missing") +
+				", chunks=" + _streamChunkObjects.Count +
+				", chunksActive=" + _streamChunksActive +
 				", streamPosition=" + StreamPositionText());
 		}
 
@@ -1039,6 +1334,27 @@ namespace Toolshed.ServiceFacilities
 		{
 			Transform anchor = _streamAnchor != null ? _streamAnchor : (_streamMeshObject != null ? _streamMeshObject.transform : null);
 			return anchor != null ? anchor.position.ToString() : "<none>";
+		}
+
+		private string ChunkDebugText()
+		{
+			if (_streamChunkObjects.Count == 0 || _streamChunkObjects[0] == null)
+			{
+				return "chunks=0";
+			}
+			GameObject chunk = _streamChunkObjects[0];
+			Renderer renderer = chunk.GetComponent<Renderer>();
+			string shaderName = renderer != null && renderer.sharedMaterial != null && renderer.sharedMaterial.shader != null
+				? renderer.sharedMaterial.shader.name
+				: "<none>";
+			return "chunks=" + _streamChunkObjects.Count +
+				", firstActive=" + chunk.activeSelf +
+				", firstLayer=" + chunk.layer +
+				", firstWorld=" + chunk.transform.position +
+				", firstLocal=" + chunk.transform.localPosition +
+				", parentScale=" + (_streamAnchor != null ? _streamAnchor.lossyScale.ToString() : "<none>") +
+				", renderer=" + (renderer != null && renderer.enabled ? "on" : "off") +
+				", shader=" + shaderName;
 		}
 
 		private string BoolValueText(string key)
@@ -1072,6 +1388,10 @@ namespace Toolshed.ServiceFacilities
 				UpdateStreamPositions();
 				_streamMeshObject.SetActive(true);
 			}
+			if (_streamChunkObjects.Count > 0)
+			{
+				SetChunkStreamActive(true);
+			}
 			for (int i = 0; i < _particleSystems.Count; i++)
 			{
 				ParticleSystem particleSystem = _particleSystems[i];
@@ -1091,6 +1411,10 @@ namespace Toolshed.ServiceFacilities
 			if (_streamMeshObject != null)
 			{
 				_streamMeshObject.SetActive(false);
+			}
+			if (_streamChunkObjects.Count > 0)
+			{
+				SetChunkStreamActive(false);
 			}
 			ParticleSystemStopBehavior stopBehavior = clear ? ParticleSystemStopBehavior.StopEmittingAndClear : ParticleSystemStopBehavior.StopEmitting;
 			for (int i = 0; i < _particleSystems.Count; i++)

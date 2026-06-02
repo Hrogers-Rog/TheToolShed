@@ -2,176 +2,61 @@
   "facilities": [
     {
       "id": "toolshed-dillsboro-bunker-c-loader",
+      "targetObjectName": "TSServiceTest_BunkerC_TankLoader_Dillsboro",
       "targetObjectNames": [
         "TSServiceTest_BunkerC_TankLoader_Dillsboro",
         "toolshed-test:scenery:bunker-c-loader"
       ],
       "modelIdentifier": "ALW_Loader_TankLoader",
-      "serviceLoadId": "bunker-c",
+      "loadPointId": "FuelLoaderFill",
       "sourceIndustryId": "dillsboro-roundhouse-ops",
       "serviceTrackSpanId": "PTSF_BunkerC_Unload",
       "serviceTrackSpanIds": [
         "PTSF_BunkerC_Unload",
         "toolshed-test:span:bunker-c-unload"
       ],
-      "infiniteSupply": false,
-      "facilityCapacity": 16000.0,
-      "loadingRate": 6.0,
-      "serviceRadius": 0.9,
-      "enableExtendedTenderSearch": true,
-      "extendedSearchRadius": 20.0,
-      "extendedLoadTargetRadius": 16.0,
-      "maximumSpeedMph": 5.0,
-      "requirePlayerOwnedCars": true,
-      "debugLogging": true,
-      "loaderAtTrackSpanCenter": true,
-      "interactionRadius": 8.0,
-      "requestTitle": "Bunker-C Loader",
-      "requestMessageTrue": "Raise",
-      "requestMessageFalse": "Lower",
-      "requireServiceCondition": true,
-      "serviceConditionBoolKey": "request",
-      "serviceConditionExpectedValue": true,
-      "animations": [
-        {
-          "animationMapKey": "PipeTurner",
-          "boolKey": "request",
-          "speed": 1.0,
-          "useTransformFallback": true,
-          "fallbackTransformName": "PipeTurner",
-          "fallbackTransformNames": [
-            "PipeTurner",
-            "PipeTunrner",
-            "RotatePipe"
-          ],
-          "fallbackTransformOverrides": [
-            {
-              "transformName": "RotatePipe",
-              "inactiveLocalEuler": {
-                "x": 0.0,
-                "y": 80.0,
-                "z": 0.0
-              },
-              "activeLocalEuler": {
-                "x": 0.0,
-                "y": 0.0,
-                "z": 0.0
-              }
-            }
-          ],
-          "fallbackDurationSeconds": 1.25,
-          "fallbackInactiveLocalEuler": {
-            "x": 0.0,
-            "y": 0.0,
-            "z": 0.0
-          },
-          "fallbackActiveLocalEuler": {
-            "x": 0.0,
-            "y": 80.0,
-            "z": 0.0
-          }
-        }
-      ],
-      "particleEffects": [
-        {
-          "boolKey": "animateLoad",
-          "requiredBoolKey": "request",
-          "requiredBoolExpectedValue": true,
-          "createIfMissing": true,
-          "requireParentTransform": true,
-          "parentTransformName": "FuelPoint",
-          "parentTransformNames": [
-            "FuelPoint",
-            "Toolshed_FlowOrigin",
-            "OilFlowOrigin",
-            "FlowOrigin",
-            "PipeTip",
-            "SpoutTip"
-          ],
-          "localPosition": {
-            "x": 0.0,
-            "y": 0.0,
-            "z": 0.0
-          },
-          "localEuler": {
-            "x": 90.0,
-            "y": 0.0,
-            "z": 0.0
-          },
-          "emissionRate": 90.0,
-          "startLifetime": 0.55,
-          "startSpeed": 0.85,
-          "startSize": 0.045,
-          "gravityModifier": 0.8,
-          "overrideStartColor": true,
-          "startColor": {
-            "r": 0.16,
-            "g": 0.09,
-            "b": 0.035,
-            "a": 0.9
-          },
-          "createVisibleStream": true,
-          "streamUsesWorldDown": true,
-          "streamLocalStart": {
-            "x": 0.0,
-            "y": 0.0,
-            "z": 0.0
-          },
-          "streamLength": 0.62,
-          "streamWidth": 0.055,
-          "streamColor": {
-            "r": 0.16,
-            "g": 0.09,
-            "b": 0.035,
-            "a": 1.0
-          },
-          "debugOriginMarker": false,
-          "clearOnStop": true
-        }
-      ]
+      "requireAuthoredLoadPoints": true,
+      "debugLogging": true
     },
     {
       "id": "toolshed-dillsboro-wood-loader",
+      "targetObjectName": "TSServiceTest_WoodShed_Dillsboro",
       "targetObjectNames": [
         "TSServiceTest_WoodShed_Dillsboro",
         "toolshed-test:scenery:wood-shed"
       ],
       "modelIdentifier": "wood-shed",
-      "serviceLoadId": "pulpwood",
+      "loadPointId": "WoodLoadPoint",
       "sourceIndustryId": "dillsboro-roundhouse-ops",
       "serviceTrackSpanId": "PTSF_Wood_Unload",
       "serviceTrackSpanIds": [
         "PTSF_Wood_Unload",
         "toolshed-test:span:wood-unload"
       ],
-      "infiniteSupply": false,
-      "facilityCapacity": 180000.0,
-      "loadingRate": 250.0,
-      "serviceRadius": 0.9,
-      "enableExtendedTenderSearch": true,
-      "extendedSearchRadius": 20.0,
-      "extendedLoadTargetRadius": 10.0,
-      "maximumSpeedMph": 5.0,
-      "requirePlayerOwnedCars": true,
-      "debugLogging": true,
-      "loaderAtTrackSpanCenter": true,
-      "interactionRadius": 2.0,
-      "requestTitle": "Wood Loader",
-      "requestMessageTrue": "Click to Stop Loading",
-      "requestMessageFalse": "Click to Start Loading",
-      "storageAnimations": [
-        {
-          "animationMapKey": "Wood Pile",
-          "loadId": "pulpwood",
-          "capacity": 180000.0,
-          "useTransformFallback": true,
-          "fallbackTransformName": "Empty",
-          "emptyLocalY": 0.2793902,
-          "fullLocalY": 2.7911012,
-          "emptyLocalScaleZ": 0.109580874,
-          "fullLocalScaleZ": 1.0
-        }
-      ]
+      "requireAuthoredLoadPoints": true,
+      "debugLogging": true
+    },
+    {
+      "id": "toolshed-whittier-bunker-c-loader",
+      "targetObjectName": "ZCustom_o1pm",
+      "modelIdentifier": "ALW_Loader_TankLoader",
+      "loadPointId": "FuelLoaderFill",
+      "sourceIndustryId": "whittier-engine-service",
+      "serviceTrackSpanId": "PTSF_Whittier_BunkerC_Unload",
+      "requireAuthoredLoadPoints": true,
+      "debugLogging": true
+    },
+    {
+      "id": "toolshed-whittier-coal-loader",
+      "targetObjectName": "ZCustom_0vzh",
+      "modelIdentifier": "ALW_Loader_DualTrackTower",
+      "sourceIndustryId": "whittier-engine-service",
+      "serviceTrackSpanIds": [
+        "PTSF_Whittier_Coal_Track_A",
+        "PTSF_Whittier_Coal_Track_B"
+      ],
+      "requireAuthoredLoadPoints": true,
+      "debugLogging": true
     }
   ]
 }
