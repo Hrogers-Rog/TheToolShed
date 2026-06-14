@@ -22,6 +22,10 @@
     <UnityModManagerAssemblyPath Condition="'$(UnityModManagerAssemblyPath)' == '' and Exists('$(UnityModManagerDir)\UnityModManager.dll')">$(UnityModManagerDir)\UnityModManager.dll</UnityModManagerAssemblyPath>
     <UnityModManagerReferenceName Condition="'$(UnityModManagerReferenceName)' == '' and Exists('$(UnityModManagerDir)\UnityModManagerNet.dll')">UnityModManagerNet</UnityModManagerReferenceName>
     <UnityModManagerReferenceName Condition="'$(UnityModManagerReferenceName)' == '' and Exists('$(UnityModManagerDir)\UnityModManager.dll')">UnityModManager</UnityModManagerReferenceName>
+    <HarmonyAssemblyPath Condition="'$(HarmonyAssemblyPath)' == '' and Exists('$(UnityManagedDir)\0Harmony.dll')">$(UnityManagedDir)\0Harmony.dll</HarmonyAssemblyPath>
+    <HarmonyAssemblyPath Condition="'$(HarmonyAssemblyPath)' == '' and Exists('$(UnityModManagerDir)\0Harmony.dll')">$(UnityModManagerDir)\0Harmony.dll</HarmonyAssemblyPath>
+    <FuseAssemblyPath Condition="'$(FuseAssemblyPath)' == '' and Exists('$(GameDir)\Mods\FUSE\FUSE.dll')">$(GameDir)\Mods\FUSE\FUSE.dll</FuseAssemblyPath>
+    <FuseAssemblyPath Condition="'$(FuseAssemblyPath)' == '' and Exists('..\FUSE\FUSE\bin\Release\net48\FUSE.dll')">..\FUSE\FUSE\bin\Release\net48\FUSE.dll</FuseAssemblyPath>
   </PropertyGroup>
 
   <ItemGroup>
@@ -43,12 +47,16 @@
       <HintPath>$(UnityManagedDir)\Definition.dll</HintPath>
       <Private>false</Private>
     </Reference>
-    <Reference Include="0Harmony" Condition="Exists('$(UnityManagedDir)\0Harmony.dll')">
-      <HintPath>$(UnityManagedDir)\0Harmony.dll</HintPath>
+    <Reference Include="0Harmony" Condition="Exists('$(HarmonyAssemblyPath)')">
+      <HintPath>$(HarmonyAssemblyPath)</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="KeyValue.Runtime" Condition="Exists('$(UnityManagedDir)\KeyValue.Runtime.dll')">
       <HintPath>$(UnityManagedDir)\KeyValue.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FUSE" Condition="Exists('$(FuseAssemblyPath)')">
+      <HintPath>$(FuseAssemblyPath)</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="AssetPack.Common" Condition="Exists('$(UnityManagedDir)\AssetPack.Common.dll')">
@@ -117,8 +125,9 @@
     <Error Condition="!Exists('$(UnityModManagerAssemblyPath)')" Text="UnityModManagerNet.dll or UnityModManager.dll was not found. Set UnityModManagerDir or GameDir." />
     <Error Condition="!Exists('$(UnityManagedDir)\Assembly-CSharp.dll')" Text="Assembly-CSharp.dll was not found. Set GameDir to your Railroader install." />
     <Error Condition="!Exists('$(UnityManagedDir)\Definition.dll')" Text="Definition.dll was not found. Set GameDir to your Railroader install." />
-    <Error Condition="!Exists('$(UnityManagedDir)\0Harmony.dll')" Text="0Harmony.dll was not found. Set GameDir to your Railroader install." />
+    <Error Condition="!Exists('$(HarmonyAssemblyPath)')" Text="0Harmony.dll was not found. Set GameDir to your Railroader install." />
     <Error Condition="!Exists('$(UnityManagedDir)\KeyValue.Runtime.dll')" Text="KeyValue.Runtime.dll was not found. Set GameDir to your Railroader install." />
+    <Error Condition="!Exists('$(FuseAssemblyPath)')" Text="FUSE.dll was not found. Install/build FUSE or set FuseAssemblyPath." />
     <Error Condition="!Exists('$(UnityManagedDir)\AssetPack.Common.dll')" Text="AssetPack.Common.dll was not found. Set GameDir to your Railroader install." />
     <Error Condition="!Exists('$(UnityManagedDir)\Newtonsoft.Json.dll')" Text="Newtonsoft.Json.dll was not found. Set GameDir to your Railroader install." />
     <Error Condition="!Exists('$(UnityManagedDir)\JsonSubTypes.dll')" Text="JsonSubTypes.dll was not found. Set GameDir to your Railroader install." />
