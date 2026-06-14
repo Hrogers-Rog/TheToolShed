@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using FUSE.Authoring.Data;
 using Track;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -23,6 +24,7 @@ namespace Toolshed.Turntables
         private Rect _windowRect = new Rect(120f, 120f, 280f, 190f);
         private bool _windowOpen;
         private float _speedDirection;
+        private float _speedMultiplier = 1f;
         private float _controllerDegreesPerSecond = DefaultDegreesPerSecond;
         private float _speedDegreesPerSecond = DefaultDegreesPerSecond;
         private SphereCollider _interactionCollider;
@@ -48,6 +50,11 @@ namespace Toolshed.Turntables
         public global::TooltipInfo TooltipInfo => new global::TooltipInfo("Hand Turntable", "Drag to line the bridge");
 
         public global::PickableActivationFilter ActivationFilter => global::PickableActivationFilter.PrimaryOnly;
+
+        public void Configure(Turntable turntable, Transform bridgeRoot, FuseTurntable definition)
+        {
+            Configure(turntable, bridgeRoot, (object)definition);
+        }
 
         public void Configure(Turntable turntable, Transform bridgeRoot, object definition)
         {
@@ -160,19 +167,24 @@ namespace Toolshed.Turntables
                 ? $"Lined to stop {_turntable.StopIndex.Value}"
                 : "Between stops");
             GUILayout.Label($"Speed: {_controllerDegreesPerSecond:0} deg/sec");
+            var previousSpeed = _controllerDegreesPerSecond;
             _controllerDegreesPerSecond = GUILayout.HorizontalSlider(
                 _controllerDegreesPerSecond,
                 MinDegreesPerSecond,
                 MaxDegreesPerSecond);
+            if (!Mathf.Approximately(previousSpeed, _controllerDegreesPerSecond))
+            {
+                RefreshManualSpeed();
+            }
 
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("<<", GUILayout.Height(28f)))
             {
-                StartTurning(-1f, FastButtonSpeed());
+                StartTurning(-1f, 2f);
             }
             if (GUILayout.Button("<", GUILayout.Height(28f)))
             {
-                StartTurning(-1f, _controllerDegreesPerSecond);
+                StartTurning(-1f, 1f);
             }
             if (GUILayout.Button("Stop", GUILayout.Height(28f)))
             {
@@ -180,11 +192,11 @@ namespace Toolshed.Turntables
             }
             if (GUILayout.Button(">", GUILayout.Height(28f)))
             {
-                StartTurning(1f, _controllerDegreesPerSecond);
+                StartTurning(1f, 1f);
             }
             if (GUILayout.Button(">>", GUILayout.Height(28f)))
             {
-                StartTurning(1f, FastButtonSpeed());
+                StartTurning(1f, 2f);
             }
             GUILayout.EndHorizontal();
 
@@ -210,23 +222,30 @@ namespace Toolshed.Turntables
                 : "Hand Turntable - " + _turntable.id;
         }
 
-        private void StartTurning(float direction, float degreesPerSecond)
+        private void StartTurning(float direction, float speedMultiplier)
         {
             EndDragInteraction(false);
             _rotatingToTarget = false;
             _targetStopIndex = null;
             _speedDirection = Mathf.Sign(direction);
-            _speedDegreesPerSecond = degreesPerSecond;
+            _speedMultiplier = Mathf.Max(speedMultiplier, 0f);
+            RefreshManualSpeed();
         }
 
-        private float FastButtonSpeed()
+        private float CurrentManualSpeed()
         {
-            return Mathf.Min(_controllerDegreesPerSecond * 2f, MaxDegreesPerSecond);
+            return Mathf.Min(_controllerDegreesPerSecond * Mathf.Max(_speedMultiplier, 0f), MaxDegreesPerSecond);
+        }
+
+        private void RefreshManualSpeed()
+        {
+            _speedDegreesPerSecond = CurrentManualSpeed();
         }
 
         private void StopUnlined()
         {
             _speedDirection = 0f;
+            _speedMultiplier = 1f;
             _rotatingToTarget = false;
             _targetStopIndex = null;
             _turntable.UpdateSegmentIndex(false);
@@ -236,6 +255,7 @@ namespace Toolshed.Turntables
         private void LineNearestStop()
         {
             _speedDirection = 0f;
+            _speedMultiplier = 1f;
             float remainder;
             var index = _turntable.IndexAndRemainderForAngle(out remainder);
             RotateToStop(index);
@@ -267,6 +287,7 @@ namespace Toolshed.Turntables
             }
 
             _speedDirection = 0f;
+            _speedMultiplier = 1f;
             _rotatingToTarget = false;
             _targetStopIndex = null;
             _dragEndOffset = DetermineGrabbedEndOffset();
@@ -339,6 +360,7 @@ namespace Toolshed.Turntables
             }
 
             _speedDirection = 0f;
+            _speedMultiplier = 1f;
             _targetStopIndex = NormalizeStopIndex(index);
             _targetAngle = Mathf.Repeat(_turntable.AngleForIndex(_targetStopIndex.Value), 360f);
             _rotatingToTarget = true;
