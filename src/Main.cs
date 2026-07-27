@@ -2,7 +2,12 @@ using UnityEngine;
 using UnityModManagerNet;
 using HarmonyLib;
 using Toolshed.OilWoodFiring;
+#if !RAILLOADER
+// The RailLoader edition ships selective interchanges as the standalone
+// "Toolshed Selective Interchanges" mod; bundling it here too would double-apply
+// every route config onto the same industries.
 using Toolshed.SelectiveInterchanges;
+#endif
 using Toolshed.ServiceFacilities;
 
 namespace Toolshed
@@ -27,9 +32,15 @@ namespace Toolshed
             _harmony = new Harmony(modEntry.Info.Id);
             _harmony.PatchAll();
             OilWoodFiringRuntime.Initialize();
+#if !RAILLOADER
             SelectiveInterchangeRuntime.Initialize();
+#endif
             ServiceFacilityRuntime.Initialize();
+#if RAILLOADER
+            Log("Loaded RailLoader edition (selective interchanges ship separately).");
+#else
             Log("Loaded. Toolshed components are available to FUSE packages.");
+#endif
             return true;
         }
 
@@ -44,7 +55,9 @@ namespace Toolshed
         private static void OnUpdate(UnityModManager.ModEntry modEntry, float deltaTime)
         {
             OilWoodFiringRuntime.Update();
+#if !RAILLOADER
             SelectiveInterchangeRuntime.Update();
+#endif
             ServiceFacilityRuntime.Update();
         }
 
@@ -84,7 +97,9 @@ namespace Toolshed
         private static bool OnUnload(UnityModManager.ModEntry modEntry)
         {
             OilWoodFiringRuntime.Unload();
+#if !RAILLOADER
             SelectiveInterchangeRuntime.Unload();
+#endif
             ServiceFacilityRuntime.Unload();
             if (_harmony != null)
             {

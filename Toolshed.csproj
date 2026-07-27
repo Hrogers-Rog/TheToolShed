@@ -2,6 +2,7 @@
   <PropertyGroup>
     <TargetFramework>net48</TargetFramework>
     <AssemblyName>Toolshed</AssemblyName>
+    <Version>0.3.0</Version>
     <RootNamespace>Toolshed</RootNamespace>
     <LangVersion>latest</LangVersion>
     <ImplicitUsings>disable</ImplicitUsings>
@@ -13,7 +14,7 @@
     <GameDir Condition="'$(GameDir)' == ''">C:\Steam\steamapps\common\Railroader</GameDir>
     <UnityManagedDir Condition="'$(UnityManagedDir)' == ''">$(GameDir)\Railroader_Data\Managed</UnityManagedDir>
     <UnityModManagerDir Condition="'$(UnityModManagerDir)' == ''">$(UnityManagedDir)\UnityModManager</UnityModManagerDir>
-    <ModDeployDir Condition="'$(ModDeployDir)' == ''">$(GameDir)\Mods\Toolshed</ModDeployDir>
+    <ModDeployDir Condition="'$(ModDeployDir)' == ''">$(GameDir)\Mods\Toolshed-v$(Version)</ModDeployDir>
     <EnableModDeploy Condition="'$(EnableModDeploy)' == ''">false</EnableModDeploy>
   </PropertyGroup>
 
@@ -32,6 +33,7 @@
     <Compile Remove="bin\**\*.cs" />
     <Compile Remove="obj\**\*.cs" />
     <Compile Remove="RailLoaderSelectiveInterchanges\**\*.cs" />
+    <Compile Remove="RailLoaderToolshed\**\*.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -53,6 +55,10 @@
     </Reference>
     <Reference Include="KeyValue.Runtime" Condition="Exists('$(UnityManagedDir)\KeyValue.Runtime.dll')">
       <HintPath>$(UnityManagedDir)\KeyValue.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="KinematicCharacterController" Condition="Exists('$(UnityManagedDir)\KinematicCharacterController.dll')">
+      <HintPath>$(UnityManagedDir)\KinematicCharacterController.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="FUSE" Condition="Exists('$(FuseAssemblyPath)')">
@@ -127,6 +133,7 @@
     <Error Condition="!Exists('$(UnityManagedDir)\Definition.dll')" Text="Definition.dll was not found. Set GameDir to your Railroader install." />
     <Error Condition="!Exists('$(HarmonyAssemblyPath)')" Text="0Harmony.dll was not found. Set GameDir to your Railroader install." />
     <Error Condition="!Exists('$(UnityManagedDir)\KeyValue.Runtime.dll')" Text="KeyValue.Runtime.dll was not found. Set GameDir to your Railroader install." />
+    <Error Condition="!Exists('$(UnityManagedDir)\KinematicCharacterController.dll')" Text="KinematicCharacterController.dll was not found. Set GameDir to your Railroader install." />
     <Error Condition="!Exists('$(FuseAssemblyPath)')" Text="FUSE.dll was not found. Install/build FUSE or set FuseAssemblyPath." />
     <Error Condition="!Exists('$(UnityManagedDir)\AssetPack.Common.dll')" Text="AssetPack.Common.dll was not found. Set GameDir to your Railroader install." />
     <Error Condition="!Exists('$(UnityManagedDir)\Newtonsoft.Json.dll')" Text="Newtonsoft.Json.dll was not found. Set GameDir to your Railroader install." />
@@ -142,6 +149,15 @@
 
   <Target Name="DeployToUnityModManagerFolder" AfterTargets="Build" Condition="'$(EnableModDeploy)' == 'true'">
     <MakeDir Directories="$(ModDeployDir)" />
+    <!-- Stale mod folders from earlier versions must go, or UMM loads the mod twice.
+         Settings.xml lives inside the mod folder, so carry it over before deleting. -->
+    <ItemGroup>
+      <ToolshedStaleModDirs Include="$(GameDir)\Mods\Toolshed" Condition="Exists('$(GameDir)\Mods\Toolshed')" />
+      <ToolshedStaleModDirs Include="$([System.IO.Directory]::GetDirectories('$(GameDir)\Mods', 'Toolshed-v*'))" />
+      <ToolshedStaleModDirs Remove="$(ModDeployDir)" />
+    </ItemGroup>
+    <Copy SourceFiles="%(ToolshedStaleModDirs.Identity)\Settings.xml" DestinationFolder="$(ModDeployDir)" Condition="'@(ToolshedStaleModDirs)' != '' and Exists('%(ToolshedStaleModDirs.Identity)\Settings.xml') and !Exists('$(ModDeployDir)\Settings.xml')" />
+    <RemoveDir Directories="@(ToolshedStaleModDirs)" />
     <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="Info.json" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="false" />
     <ItemGroup>
@@ -150,6 +166,11 @@
     </ItemGroup>
     <Copy SourceFiles="README.md" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="false" />
     <Copy SourceFiles="ServiceFacility_Audit.md" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="false" />
+    <ItemGroup>
+      <ToolshedStaleVersionMarkers Include="$(ModDeployDir)\Toolshed-v*.txt" />
+    </ItemGroup>
+    <Delete Files="@(ToolshedStaleVersionMarkers)" />
+    <WriteLinesToFile File="$(ModDeployDir)\Toolshed-v$(Version).txt" Lines="$(Version)" Overwrite="true" />
     <Copy SourceFiles="@(ToolshedAssetPackFiles)" DestinationFiles="@(ToolshedAssetPackFiles->'$(ModDeployDir)\SCAssetPacks\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(ToolshedExampleFiles)" DestinationFiles="@(ToolshedExampleFiles->'$(ModDeployDir)\Examples\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>

@@ -27,6 +27,7 @@ namespace Toolshed.SelectiveInterchanges
 		private static readonly Dictionary<string, SelectiveInterchangeComponent> Applied = new Dictionary<string, SelectiveInterchangeComponent>(StringComparer.OrdinalIgnoreCase);
 		private static readonly HashSet<string> Warned = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		private static readonly MethodInfo OpsRebuildCollectionsMethod = AccessTools.Method(typeof(OpsController), "RebuildCollections");
+		private static readonly MethodInfo CarUpdateWaybillMethod = AccessTools.Method(typeof(Car), "UpdateWaybill");
 
 		private static bool _loaded;
 		private static bool _loggedScanRoots;
@@ -71,13 +72,98 @@ namespace Toolshed.SelectiveInterchanges
 			_nextRetryTime = Time.unscaledTime + RetryIntervalSeconds;
 			if (Definitions.Count == 0)
 			{
-				LoadDefinitions();
+				// Mod configuration files are static for the lifetime of a
+				// Railroader process. Initialize already scanned every mod root;
+				// repeating that disk walk every two seconds when no files exist
+				// creates permanent frame-time spikes for no useful work.
+				return;
 			}
 
 			for (int i = 0; i < Definitions.Count; i++)
 			{
 				ApplyOrRefresh(Definitions[i]);
 			}
+			RepairCarWaybillCaches();
+		}
+
+		/// <summary>
+		/// Car.Waybill is a cache that goes null (and stays null) when a waybill referencing
+		/// one of our components parses before the component is registered with OpsController —
+		/// which happens every save load, because cars initialize before this runtime applies
+		/// definitions. Re-parse those caches once our identifiers resolve so arrival payments
+		/// and waybill tags survive a reload.
+		/// </summary>
+		private static void RepairCarWaybillCaches()
+		{
+			if (CarUpdateWaybillMethod == null || Applied.Count == 0)
+			{
+				return;
+			}
+			TrainController trainController = TrainController.Shared;
+			OpsController opsController = OpsController.Shared;
+			if (trainController == null || opsController == null)
+			{
+				return;
+			}
+
+			foreach (Car car in trainController.Cars)
+			{
+				if (car == null || car.Waybill != null || car.KeyValueObject == null)
+				{
+					continue;
+				}
+				KeyValue.Runtime.Value raw = car.KeyValueObject[Car.KeyOpsWaybill];
+				if (raw.Type != KeyValue.Runtime.ValueType.Dictionary)
+				{
+					continue;
+				}
+				try
+				{
+					if (Waybill.FromPropertyValue(raw, opsController) == null)
+					{
+						continue;
+					}
+				}
+				catch (Exception)
+				{
+					// Destination or origin still unresolvable; retry on a later pass.
+					continue;
+				}
+				try
+				{
+					CarUpdateWaybillMethod.Invoke(car, new object[] { raw });
+					Main.Log("[SelectiveInterchange] restored cached waybill for " + car.DisplayName + ".");
+				}
+				catch (Exception ex)
+				{
+					Main.Warn("[SelectiveInterchange] could not restore waybill cache for " + car.DisplayName + ": " + ex.Message);
+				}
+			}
+		}
+
+		/// <summary>
+		/// OpsCarPosition.Equals compares span arrays by reference, so reassigning
+		/// trackSpans invalidates every waybill destination already cached on a car.
+		/// Reuse the existing array whenever the resolved spans are unchanged.
+		/// </summary>
+		internal static bool SpanArraysMatch(TrackSpan[] current, TrackSpan[] resolved)
+		{
+			if (ReferenceEquals(current, resolved))
+			{
+				return true;
+			}
+			if (current == null || resolved == null || current.Length != resolved.Length)
+			{
+				return false;
+			}
+			for (int i = 0; i < current.Length; i++)
+			{
+				if (!ReferenceEquals(current[i], resolved[i]))
+				{
+					return false;
+				}
+			}
+			return true;
 		}
 
 		internal static IEnumerable<string> CandidateStrings(string primary, string[] aliases)
@@ -187,7 +273,7 @@ namespace Toolshed.SelectiveInterchanges
 			List<string> configFiles = FindConfigFiles().ToList();
 			if (configFiles.Count == 0)
 			{
-				WarnOnce("scan:no-configs", "no " + ConfigFileName + " files found yet; scanner will retry.");
+				WarnOnce("scan:no-configs", "no " + ConfigFileName + " files found; scan complete for this session.");
 				return;
 			}
 
@@ -395,6 +481,8 @@ namespace Toolshed.SelectiveInterchanges
 				Applied.Remove(id);
 			}
 
+			bool dirty = false;
+			string subId = string.IsNullOrWhiteSpace(definition.componentId) ? "toolshed-selective-" + id : definition.componentId;
 			if (component == null)
 			{
 				Transform child = industry.transform.Find("Toolshed Selective Interchange - " + id);
@@ -405,12 +493,20 @@ namespace Toolshed.SelectiveInterchanges
 					childObject.transform.SetParent(industry.transform, false);
 				}
 				component = childObject.GetComponent<SelectiveInterchangeComponent>() ?? childObject.AddComponent<SelectiveInterchangeComponent>();
+				// Identifier caches "industry.subIdentifier" on first access; make sure the
+				// component never becomes visible to the game with a null subIdentifier.
+				component.subIdentifier = subId;
 				childObject.SetActive(true);
 				Applied[id] = component;
+				dirty = true;
 			}
 
 			TrackSpan[] spans = ResolveTrackSpans(definition.trackSpanIds);
-			component.subIdentifier = string.IsNullOrWhiteSpace(definition.componentId) ? "toolshed-selective-" + id : definition.componentId;
+			if (!string.Equals(component.subIdentifier, subId, StringComparison.Ordinal))
+			{
+				component.subIdentifier = subId;
+				dirty = true;
+			}
 			component.name = string.IsNullOrWhiteSpace(definition.displayName) ? "Selective Interchange" : definition.displayName;
 			component.displayTitle = component.name;
 			component.configurePurchases = definition.configurePurchases;
@@ -424,12 +520,22 @@ namespace Toolshed.SelectiveInterchanges
 			component.inboundLoads = definition.inboundLoads ?? Array.Empty<SelectiveInterchangeInboundLoadRule>();
 			component.emptyCarRequests = definition.emptyCarRequests ?? Array.Empty<SelectiveInterchangeEmptyCarRequest>();
 			component.outboundRoutes = definition.outboundRoutes ?? Array.Empty<SelectiveInterchangeOutboundRoute>();
-			component.trackSpans = spans.Length > 0 ? spans : interchange.trackSpans;
+			TrackSpan[] resolvedSpans = spans.Length > 0 ? spans : interchange.trackSpans;
+			if (!SpanArraysMatch(component.trackSpans, resolvedSpans))
+			{
+				// Keep the existing array instance whenever possible: waybill destinations cached
+				// on cars hold this array by reference, and payment matching breaks if it churns.
+				component.trackSpans = resolvedSpans;
+				dirty = true;
+			}
 			component.carTypeFilter = new CarTypeFilter(string.IsNullOrWhiteSpace(definition.carTypeFilterQuery) ? "*" : definition.carTypeFilterQuery);
 			component.sharedStorage = true;
 			component.debugLogging = definition.debugLogging;
 			component.Configure();
-			RebuildOpsCollections();
+			if (dirty)
+			{
+				RebuildOpsCollections();
+			}
 		}
 
 		private static Industry ResolveDefinitionIndustry(SelectiveInterchangeDefinition definition)

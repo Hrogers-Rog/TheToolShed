@@ -19,6 +19,8 @@ namespace Toolshed.SelectiveInterchanges
 	public sealed class SelectiveInterchangeComponent : IndustryComponent
 	{
 		private static readonly FieldInfo IndustryCachedComponentsField = AccessTools.Field(typeof(Industry), "_cachedComponents");
+		private static readonly MethodInfo IndustryReceivedCarCountGetter = AccessTools.PropertyGetter(typeof(Industry), "ReceivedCarCount");
+		private static readonly MethodInfo IndustryReceivedCarCountSetter = AccessTools.PropertySetter(typeof(Industry), "ReceivedCarCount");
 
 		private static readonly System.Random Random = new System.Random();
 
@@ -70,6 +72,63 @@ namespace Toolshed.SelectiveInterchanges
 			if (enableProductionAccounting)
 			{
 				ApplyInitialCounters(ctx);
+			}
+		}
+
+		public override void CheckForCompleted(IIndustryContext ctx)
+		{
+			base.CheckForCompleted(ctx);
+
+			// The base pass matches waybill destinations with OpsCarPosition.Equals, which
+			// compares span arrays by reference. Cars whose cached waybill predates the most
+			// recent trackSpans refresh fail that check forever and would never be paid, so
+			// sweep again by identifier for anything the base pass could not have handled.
+			foreach (IOpsCar car in EnumerateCars(ctx, false))
+			{
+				TryCompletePendingWaybill(ctx, car, true);
+			}
+		}
+
+		private bool TryCompletePendingWaybill(IIndustryContext ctx, IOpsCar car, bool skipWhenPositionMatches)
+		{
+			Waybill? waybill = car.Waybill;
+			if (waybill == null || waybill.Value.Completed)
+			{
+				return false;
+			}
+			Waybill value = waybill.Value;
+			if (!string.Equals(value.Destination.Identifier, Identifier, StringComparison.OrdinalIgnoreCase))
+			{
+				return false;
+			}
+			if (skipWhenPositionMatches && value.Destination.Equals(this))
+			{
+				// The base CheckForCompleted pass owns this car; paying here too would double-pay.
+				return false;
+			}
+			ctx.PayWaybill(car, value);
+			value.PaymentOnArrival = 0;
+			value.Completed = true;
+			car.SetWaybill(new Waybill?(value), this, "Paid Completed (selective interchange)");
+			BumpReceivedCarCount();
+			LogDebug("paid pending waybill for " + car.DisplayName);
+			return true;
+		}
+
+		private void BumpReceivedCarCount()
+		{
+			if (Industry == null || IndustryReceivedCarCountGetter == null || IndustryReceivedCarCountSetter == null)
+			{
+				return;
+			}
+			try
+			{
+				int received = (int)IndustryReceivedCarCountGetter.Invoke(Industry, null);
+				IndustryReceivedCarCountSetter.Invoke(Industry, new object[] { received + 1 });
+			}
+			catch (Exception ex)
+			{
+				LogDebug("could not update received car count: " + ex.Message);
 			}
 		}
 
@@ -284,6 +343,8 @@ namespace Toolshed.SelectiveInterchanges
 				string key = string.IsNullOrWhiteSpace(request.equipmentCounterKey) ? "equipment" : request.equipmentCounterKey;
 				float credit = request.equipmentCreditsPerCar > 0f ? request.equipmentCreditsPerCar : 1f;
 				AddCounter(ctx, key, credit, request.maxEquipmentCredits);
+				// Intake removes the car from the world, so settle any unpaid delivery first.
+				TryCompletePendingWaybill(ctx, car, false);
 				ctx.MoveToBardo(car);
 				LogDebug("received empty " + car.DisplayName + " as off-map equipment credit " + credit.ToString("0.###") + " for " + key);
 				return true;
@@ -319,6 +380,8 @@ namespace Toolshed.SelectiveInterchanges
 					continue;
 				}
 
+				// Settle any unpaid delivery before the load (and possibly the car) disappears.
+				TryCompletePendingWaybill(ctx, car, false);
 				float unloaded = car.Unload(load, quantity.Item1);
 				if (unloaded <= 0f)
 				{
@@ -820,7 +883,11 @@ namespace Toolshed.SelectiveInterchanges
 				unloader.enabled = true;
 				unloader.load = load;
 				unloader.carTypeFilter = BuildFilter(rule.carTypeFilterQuery);
-				unloader.trackSpans = ResolveEffectiveTrackSpans(rule.trackSpanIds);
+				TrackSpan[] unloaderSpans = ResolveEffectiveTrackSpans(rule.trackSpanIds);
+				if (!SelectiveInterchangeRuntime.SpanArraysMatch(unloader.trackSpans, unloaderSpans))
+				{
+					unloader.trackSpans = unloaderSpans;
+				}
 				unloader.sharedStorage = true;
 				unloader.carUnloadRate = rule.carTransferRate > 0f ? rule.carTransferRate : 200000f;
 				unloader.storageConsumptionRate = rule.storageConsumptionRate;
@@ -896,7 +963,11 @@ namespace Toolshed.SelectiveInterchanges
 				loader.enabled = true;
 				loader.load = load;
 				loader.carTypeFilter = BuildFilter(rule.carTypeFilterQuery);
-				loader.trackSpans = ResolveEffectiveTrackSpans(rule.trackSpanIds);
+				TrackSpan[] loaderSpans = ResolveEffectiveTrackSpans(rule.trackSpanIds);
+				if (!SelectiveInterchangeRuntime.SpanArraysMatch(loader.trackSpans, loaderSpans))
+				{
+					loader.trackSpans = loaderSpans;
+				}
 				loader.sharedStorage = true;
 				loader.name = string.IsNullOrWhiteSpace(rule.displayName)
 					? DisplayName + " - " + load.description
