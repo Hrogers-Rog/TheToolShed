@@ -1,20 +1,22 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net48</TargetFramework>
-    <AssemblyName>ToolshedSelectiveInterchanges</AssemblyName>
+    <AssemblyName>Toolshed</AssemblyName>
+    <Version>0.3.0</Version>
     <RootNamespace>Toolshed</RootNamespace>
     <LangVersion>latest</LangVersion>
     <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>disable</Nullable>
     <Platforms>AnyCPU</Platforms>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <DefineConstants>$(DefineConstants);RAILLOADER</DefineConstants>
   </PropertyGroup>
 
   <PropertyGroup>
     <GameDir Condition="'$(GameDir)' == ''">C:\Steam\steamapps\common\Railroader</GameDir>
     <UnityManagedDir Condition="'$(UnityManagedDir)' == ''">$(GameDir)\Railroader_Data\Managed</UnityManagedDir>
     <UnityModManagerDir Condition="'$(UnityModManagerDir)' == ''">$(UnityManagedDir)\UnityModManager</UnityModManagerDir>
-    <ModDeployDir Condition="'$(ModDeployDir)' == ''">$(GameDir)\Mods\Toolshed Selective Interchanges</ModDeployDir>
+    <ModDeployDir Condition="'$(ModDeployDir)' == ''">$(GameDir)\Mods\Toolshed</ModDeployDir>
     <EnableModDeploy Condition="'$(EnableModDeploy)' == ''">false</EnableModDeploy>
   </PropertyGroup>
 
@@ -23,11 +25,19 @@
     <UnityModManagerAssemblyPath Condition="'$(UnityModManagerAssemblyPath)' == '' and Exists('$(UnityModManagerDir)\UnityModManager.dll')">$(UnityModManagerDir)\UnityModManager.dll</UnityModManagerAssemblyPath>
     <UnityModManagerReferenceName Condition="'$(UnityModManagerReferenceName)' == '' and Exists('$(UnityModManagerDir)\UnityModManagerNet.dll')">UnityModManagerNet</UnityModManagerReferenceName>
     <UnityModManagerReferenceName Condition="'$(UnityModManagerReferenceName)' == '' and Exists('$(UnityModManagerDir)\UnityModManager.dll')">UnityModManager</UnityModManagerReferenceName>
+    <HarmonyAssemblyPath Condition="'$(HarmonyAssemblyPath)' == '' and Exists('$(UnityManagedDir)\0Harmony.dll')">$(UnityManagedDir)\0Harmony.dll</HarmonyAssemblyPath>
+    <HarmonyAssemblyPath Condition="'$(HarmonyAssemblyPath)' == '' and Exists('$(UnityModManagerDir)\0Harmony.dll')">$(UnityModManagerDir)\0Harmony.dll</HarmonyAssemblyPath>
   </PropertyGroup>
 
+  <!-- RailLoader edition: every Toolshed module except the FUSE-authored turntable controller
+       and SelectiveInterchanges, which ships as the standalone "Toolshed Selective Interchanges"
+       mod (bundling both would double-apply route configs). -->
   <ItemGroup>
-    <Compile Include="Main.cs" />
-    <Compile Include="..\src\SelectiveInterchanges\*.cs" Link="SelectiveInterchanges\%(Filename)%(Extension)" />
+    <Compile Include="..\src\Main.cs" Link="src\Main.cs" />
+    <Compile Include="..\src\Settings.cs" Link="src\Settings.cs" />
+    <Compile Include="..\src\Couplers\*.cs" Link="src\Couplers\%(Filename)%(Extension)" />
+    <Compile Include="..\src\OilWoodFiring\*.cs" Link="src\OilWoodFiring\%(Filename)%(Extension)" />
+    <Compile Include="..\src\ServiceFacilities\*.cs" Link="src\ServiceFacilities\%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>
@@ -43,16 +53,24 @@
       <HintPath>$(UnityManagedDir)\Definition.dll</HintPath>
       <Private>false</Private>
     </Reference>
-    <Reference Include="0Harmony" Condition="Exists('$(UnityManagedDir)\0Harmony.dll')">
-      <HintPath>$(UnityManagedDir)\0Harmony.dll</HintPath>
+    <Reference Include="0Harmony" Condition="Exists('$(HarmonyAssemblyPath)')">
+      <HintPath>$(HarmonyAssemblyPath)</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="KeyValue.Runtime" Condition="Exists('$(UnityManagedDir)\KeyValue.Runtime.dll')">
       <HintPath>$(UnityManagedDir)\KeyValue.Runtime.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="AssetPack.Common" Condition="Exists('$(UnityManagedDir)\AssetPack.Common.dll')">
+      <HintPath>$(UnityManagedDir)\AssetPack.Common.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="Newtonsoft.Json" Condition="Exists('$(UnityManagedDir)\Newtonsoft.Json.dll')">
       <HintPath>$(UnityManagedDir)\Newtonsoft.Json.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="JsonSubTypes" Condition="Exists('$(UnityManagedDir)\JsonSubTypes.dll')">
+      <HintPath>$(UnityManagedDir)\JsonSubTypes.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.CoreModule" Condition="Exists('$(UnityManagedDir)\UnityEngine.CoreModule.dll')">
@@ -63,20 +81,38 @@
       <HintPath>$(UnityManagedDir)\UnityEngine.IMGUIModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="UnityEngine.AnimationModule" Condition="Exists('$(UnityManagedDir)\UnityEngine.AnimationModule.dll')">
+      <HintPath>$(UnityManagedDir)\UnityEngine.AnimationModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule" Condition="Exists('$(UnityManagedDir)\UnityEngine.InputLegacyModule.dll')">
+      <HintPath>$(UnityManagedDir)\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.JSONSerializeModule" Condition="Exists('$(UnityManagedDir)\UnityEngine.JSONSerializeModule.dll')">
+      <HintPath>$(UnityManagedDir)\UnityEngine.JSONSerializeModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.PhysicsModule" Condition="Exists('$(UnityManagedDir)\UnityEngine.PhysicsModule.dll')">
+      <HintPath>$(UnityManagedDir)\UnityEngine.PhysicsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ParticleSystemModule" Condition="Exists('$(UnityManagedDir)\UnityEngine.ParticleSystemModule.dll')">
+      <HintPath>$(UnityManagedDir)\UnityEngine.ParticleSystemModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
   <ItemGroup>
     <None Include="Info.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Include="README.md">
+    <None Include="ToolshedServiceFacilities.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Include="..\Examples\selective-interchange-readme.md" Link="selective-interchange-readme.md">
+    <None Include="..\Examples\**\*" Link="Examples\%(RecursiveDir)%(Filename)%(Extension)">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Include="..\Examples\KingG.Appalachian-Railway.ToolshedSelectiveInterchanges.json" Link="Examples\KingG.Appalachian-Railway.ToolshedSelectiveInterchanges.json" Condition="Exists('..\Examples\KingG.Appalachian-Railway.ToolshedSelectiveInterchanges.json')">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <TargetPath>Examples\%(RecursiveDir)%(Filename)%(Extension)</TargetPath>
     </None>
   </ItemGroup>
 
@@ -84,19 +120,21 @@
     <Error Condition="!Exists('$(UnityModManagerAssemblyPath)')" Text="UnityModManagerNet.dll or UnityModManager.dll was not found. Set UnityModManagerDir or GameDir." />
     <Error Condition="!Exists('$(UnityManagedDir)\Assembly-CSharp.dll')" Text="Assembly-CSharp.dll was not found. Set GameDir to your Railroader install." />
     <Error Condition="!Exists('$(UnityManagedDir)\Definition.dll')" Text="Definition.dll was not found. Set GameDir to your Railroader install." />
-    <Error Condition="!Exists('$(UnityManagedDir)\0Harmony.dll')" Text="0Harmony.dll was not found. Set GameDir to your Railroader install." />
+    <Error Condition="!Exists('$(HarmonyAssemblyPath)')" Text="0Harmony.dll was not found. Set GameDir to your Railroader install." />
     <Error Condition="!Exists('$(UnityManagedDir)\KeyValue.Runtime.dll')" Text="KeyValue.Runtime.dll was not found. Set GameDir to your Railroader install." />
+    <Error Condition="!Exists('$(UnityManagedDir)\AssetPack.Common.dll')" Text="AssetPack.Common.dll was not found. Set GameDir to your Railroader install." />
     <Error Condition="!Exists('$(UnityManagedDir)\Newtonsoft.Json.dll')" Text="Newtonsoft.Json.dll was not found. Set GameDir to your Railroader install." />
-    <Error Condition="!Exists('$(UnityManagedDir)\UnityEngine.CoreModule.dll')" Text="UnityEngine.CoreModule.dll was not found." />
-    <Error Condition="!Exists('$(UnityManagedDir)\UnityEngine.IMGUIModule.dll')" Text="UnityEngine.IMGUIModule.dll was not found." />
+    <Error Condition="!Exists('$(UnityManagedDir)\JsonSubTypes.dll')" Text="JsonSubTypes.dll was not found. Set GameDir to your Railroader install." />
   </Target>
 
   <Target Name="DeployToUnityModManagerFolder" AfterTargets="Build" Condition="'$(EnableModDeploy)' == 'true'">
     <MakeDir Directories="$(ModDeployDir)" />
     <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="Info.json" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="false" />
-    <Copy SourceFiles="README.md" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="false" />
-    <Copy SourceFiles="..\Examples\selective-interchange-readme.md" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="false" />
-    <Copy SourceFiles="..\Examples\KingG.Appalachian-Railway.ToolshedSelectiveInterchanges.json" DestinationFolder="$(ModDeployDir)\Examples" SkipUnchangedFiles="false" Condition="Exists('..\Examples\KingG.Appalachian-Railway.ToolshedSelectiveInterchanges.json')" />
+    <Copy SourceFiles="ToolshedServiceFacilities.json" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="false" />
+    <ItemGroup>
+      <RailLoaderExampleFiles Include="..\Examples\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(RailLoaderExampleFiles)" DestinationFiles="@(RailLoaderExampleFiles->'$(ModDeployDir)\Examples\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>
 </Project>

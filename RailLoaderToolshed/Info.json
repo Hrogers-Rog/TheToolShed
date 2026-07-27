@@ -1,0 +1,9 @@
+{
+  "Id": "Toolshed",
+  "DisplayName": "Toolshed (RailLoader)",
+  "Author": "Hunter Rogers",
+  "Version": "0.3.0",
+  "ManagerVersion": "0.27.10",
+  "AssemblyName": "Toolshed.dll",
+  "EntryMethod": "Toolshed.Main.Load"
+}

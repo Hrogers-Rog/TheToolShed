@@ -441,3 +441,21 @@ Interchange does not buy:
 - [ ] Validate asset identifiers with `/fuse.assets` or FUSE health tooling.
 - [ ] Test save/reload persistence.
 - [ ] Test delivery, service loading, and interchange separately.
+
+## Reusing an Existing Stand Loader (Diesel Stand -> Bunker C)
+
+Set `useExistingTargetLoader: true` on a facility definition to adopt the
+`CarLoadTargetLoader` that already exists on the target scenery — for example the
+vanilla `dieselFuelingStand` spliney placed by a map mod — instead of creating a
+second loader. The adopted loader keeps its own animations, key wiring, and
+interaction, but its dispensed load is retargeted to `serviceLoadId`.
+
+- `serviceLoadId` decides what the stand dispenses: `diesel-fuel` or `bunker-c`.
+- Leave `loadingRate`/`serviceRadius` unset to keep the stand's authored values.
+- `sourceIndustryId` + `infiniteSupply: false` makes supply finite from that
+  industry's storage; omit the industry for an infinite stand.
+- Set `attachTargetPickable: false` when the stand already has its own click
+  interaction.
+
+See `Examples/diesel-stand-loader-example.json` for a bunker-c stand and a
+diesel stand configured from the same prefab.

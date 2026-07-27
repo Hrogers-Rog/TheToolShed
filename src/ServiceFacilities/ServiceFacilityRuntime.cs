@@ -77,7 +77,10 @@ namespace Toolshed.ServiceFacilities
 			_nextRetryTime = Time.unscaledTime + RetryIntervalSeconds;
 			if (Definitions.Count == 0)
 			{
-				LoadDefinitions();
+				// Configuration files cannot appear without changing the installed
+				// mod set, which requires a restart. Avoid rescanning the complete
+				// Mods tree forever when this installation has no definitions.
+				return;
 			}
 
 			for (int i = 0; i < Definitions.Count; i++)
@@ -92,7 +95,7 @@ namespace Toolshed.ServiceFacilities
 			List<string> configFiles = FindConfigFiles().ToList();
 			if (configFiles.Count == 0)
 			{
-				WarnOnce("scan:no-configs", "no " + ConfigFileName + " files found yet; scanner will retry.");
+				WarnOnce("scan:no-configs", "no " + ConfigFileName + " files found; scan complete for this session.");
 				return;
 			}
 
@@ -317,7 +320,10 @@ namespace Toolshed.ServiceFacilities
 						existing.gameObject.SetActive(false);
 						return;
 					}
-					ConfigureRuntimeObject(existing.gameObject, existingTarget, id, definition, resolvedIndustry, resolvedSpan, resolvedSpans, resolvedLoad);
+					if (!ConfigureRuntimeObject(existing.gameObject, existingTarget, id, definition, resolvedIndustry, resolvedSpan, resolvedSpans, resolvedLoad))
+					{
+						return;
+					}
 					if (!existing.gameObject.activeSelf)
 					{
 						existing.gameObject.SetActive(true);
@@ -373,7 +379,10 @@ namespace Toolshed.ServiceFacilities
 			{
 				return;
 			}
-			ConfigureRuntimeObject(serviceRoot, target, id, definition, industry, span, spans, load);
+			if (!ConfigureRuntimeObject(serviceRoot, target, id, definition, industry, span, spans, load))
+			{
+				return;
+			}
 			serviceRoot.SetActive(true);
 
 			UniversalServiceFacilityComponent facility = serviceRoot.GetComponent<UniversalServiceFacilityComponent>();
@@ -494,7 +503,10 @@ namespace Toolshed.ServiceFacilities
 			}
 
 			PlaceServiceRootAtAuthoredLoadPoint(serviceRoot, loadPoint);
-			ConfigureRuntimeObject(serviceRoot, target, id, definition, industry, span, spans, load);
+			if (!ConfigureRuntimeObject(serviceRoot, target, id, definition, industry, span, spans, load))
+			{
+				return;
+			}
 			KeyValueObject keyValue = serviceRoot.GetComponent<KeyValueObject>();
 			ConfigureAuthoredPickable(loadPoint, definition, keyValue, definition.requestLoadingBoolKey, industry, load);
 			ConfigureAuthoredStoragePickable(storage, definition, industry, load);
@@ -991,26 +1003,71 @@ namespace Toolshed.ServiceFacilities
 			return new string(chars);
 		}
 
-		private static void ConfigureRuntimeObject(GameObject serviceRoot, GameObject target, string id, ServiceFacilityDefinition definition, Industry industry, TrackSpan span, TrackSpan[] spans, Load load)
+		private static bool ConfigureRuntimeObject(GameObject serviceRoot, GameObject target, string id, ServiceFacilityDefinition definition, Industry industry, TrackSpan span, TrackSpan[] spans, Load load)
 		{
 			KeyValueObject keyValue = serviceRoot.GetComponent<KeyValueObject>() ?? serviceRoot.AddComponent<KeyValueObject>();
 			GlobalKeyValueObject global = serviceRoot.GetComponent<GlobalKeyValueObject>() ?? serviceRoot.AddComponent<GlobalKeyValueObject>();
 			global.globalObjectId = id + ".service-loader";
 
-			CarLoadTargetLoader loader = serviceRoot.GetComponent<CarLoadTargetLoader>() ?? serviceRoot.AddComponent<CarLoadTargetLoader>();
-			CarLoaderSequencer sequencer = serviceRoot.GetComponent<CarLoaderSequencer>() ?? serviceRoot.AddComponent<CarLoaderSequencer>();
+			CarLoadTargetLoader loader;
+			CarLoaderSequencer sequencer;
+			bool adoptedLoader = false;
+			if (definition.useExistingTargetLoader)
+			{
+				// Reuse the loader the scenery already ships with (e.g. the vanilla diesel fueling
+				// stand) so its animations/interaction stay intact; only the load and supply change.
+				loader = FindExistingTargetLoader(target, serviceRoot);
+				if (loader == null)
+				{
+					WarnOnce(id + ":target-loader", "waiting for an existing CarLoadTargetLoader under '" + definition.TargetDescription + "' for " + id);
+					return false;
+				}
+				adoptedLoader = true;
+				sequencer = FindExistingTargetSequencer(loader, target, serviceRoot);
+				RetargetAdoptedStandTooltips(target, serviceRoot, definition, industry, load);
+			}
+			else
+			{
+				loader = serviceRoot.GetComponent<CarLoadTargetLoader>() ?? serviceRoot.AddComponent<CarLoadTargetLoader>();
+				sequencer = serviceRoot.GetComponent<CarLoaderSequencer>() ?? serviceRoot.AddComponent<CarLoaderSequencer>();
+			}
 			UniversalServiceFacilityComponent facility = serviceRoot.GetComponent<UniversalServiceFacilityComponent>() ?? serviceRoot.AddComponent<UniversalServiceFacilityComponent>();
 			string canLoadKey = string.IsNullOrWhiteSpace(definition.canLoadBoolKey) ? "canLoad" : definition.canLoadBoolKey;
 			string isLoadingKey = string.IsNullOrWhiteSpace(definition.isLoadingBoolKey) ? "isLoading" : definition.isLoadingBoolKey;
 			string requestKey = string.IsNullOrWhiteSpace(definition.requestLoadingBoolKey) ? "request" : definition.requestLoadingBoolKey;
 			string prepareKey = string.IsNullOrWhiteSpace(definition.prepareLoadBoolKey) ? "prepareLoad" : definition.prepareLoadBoolKey;
 			string animateKey = string.IsNullOrWhiteSpace(definition.animateLoadBoolKey) ? "animateLoad" : definition.animateLoadBoolKey;
+			if (adoptedLoader && loader.keyValueObject != null)
+			{
+				// The prefab's own key wiring is authoritative; the facility follows it so the
+				// stand's sequencer, animations, and click interaction keep working.
+				keyValue = loader.keyValueObject;
+				canLoadKey = FirstNonEmpty(loader.canLoadBoolKey, canLoadKey);
+				isLoadingKey = FirstNonEmpty(loader.isLoadingBoolKey, isLoadingKey);
+				if (sequencer != null)
+				{
+					requestKey = FirstNonEmpty(sequencer.readWantsLoadingKey, requestKey);
+					prepareKey = FirstNonEmpty(sequencer.writePrepareLoadKey, prepareKey);
+					animateKey = FirstNonEmpty(sequencer.writeAnimateLoadKey, animateKey);
+				}
+			}
 
 			facility.serviceLoadId = definition.serviceLoadId;
 			facility.infiniteSupply = definition.UsesInfiniteSupply;
 			facility.facilityCapacity = Mathf.Max(definition.facilityCapacity, 0f);
 			facility.loadingRate = definition.loadingRate > 0f ? definition.loadingRate : loader.outputRate;
-			facility.serviceRadius = definition.serviceRadius > 0f ? definition.serviceRadius : 0.8f;
+			if (adoptedLoader)
+			{
+				// Keep the prefab's authored service radius unless the JSON explicitly overrides it
+				// (the definition default of 0.8 counts as "not specified" for adopted loaders).
+				facility.serviceRadius = definition.serviceRadius > 0f && Mathf.Abs(definition.serviceRadius - 0.8f) > 0.0001f
+					? definition.serviceRadius
+					: Mathf.Max(0.1f, loader.radius);
+			}
+			else
+			{
+				facility.serviceRadius = definition.serviceRadius > 0f ? definition.serviceRadius : 0.8f;
+			}
 			facility.maximumSpeedMph = definition.maximumSpeedMph > 0f ? definition.maximumSpeedMph : 5f;
 			facility.serviceTrackSpan = span;
 			facility.serviceTrackSpans = spans ?? Array.Empty<TrackSpan>();
@@ -1045,16 +1102,23 @@ namespace Toolshed.ServiceFacilities
 
 			// These must be wired before the inactive service root is enabled; vanilla CarLoaderSequencer registers
 			// its key observer in OnEnable, and late assignment leaves manual request toggles unable to drive prepareLoad.
-			loader.keyValueObject = keyValue;
-			loader.canLoadBoolKey = canLoadKey;
-			loader.isLoadingBoolKey = isLoadingKey;
-			sequencer.keyValueObject = keyValue;
-			sequencer.readWantsLoadingKey = requestKey;
-			sequencer.readIsLoadingKey = isLoadingKey;
-			sequencer.writeCanLoadKey = canLoadKey;
-			sequencer.writePrepareLoadKey = prepareKey;
-			sequencer.writeAnimateLoadKey = animateKey;
-			sequencer.logStateChanges = definition.debugLogging;
+			// Adopted loaders that already carry their own KeyValueObject keep their prefab wiring untouched.
+			if (!adoptedLoader || loader.keyValueObject == null)
+			{
+				loader.keyValueObject = keyValue;
+				loader.canLoadBoolKey = canLoadKey;
+				loader.isLoadingBoolKey = isLoadingKey;
+			}
+			if (sequencer != null && (!adoptedLoader || sequencer.keyValueObject == null))
+			{
+				sequencer.keyValueObject = keyValue;
+				sequencer.readWantsLoadingKey = requestKey;
+				sequencer.readIsLoadingKey = isLoadingKey;
+				sequencer.writeCanLoadKey = canLoadKey;
+				sequencer.writePrepareLoadKey = prepareKey;
+				sequencer.writeAnimateLoadKey = animateKey;
+				sequencer.logStateChanges = definition.debugLogging;
+			}
 
 			if (definition.createInteractionTrigger)
 			{
@@ -1068,6 +1132,121 @@ namespace Toolshed.ServiceFacilities
 			{
 				RemoveTargetPickable(target);
 			}
+			return true;
+		}
+
+		/// <summary>
+		/// Adopted stands carry a prefab IndustryContentHoverable whose serialized title and
+		/// filter load still describe the original load (e.g. "Diesel Fuel Storage"). Replace it
+		/// with a storage pickable bound to the retargeted load so the hover matches reality.
+		/// </summary>
+		private static void RetargetAdoptedStandTooltips(GameObject target, GameObject serviceRoot, ServiceFacilityDefinition definition, Industry industry, Load load)
+		{
+			if (target == null || load == null)
+			{
+				return;
+			}
+			IndustryContentHoverable[] hoverables = target.GetComponentsInChildren<IndustryContentHoverable>(true);
+			for (int i = 0; i < hoverables.Length; i++)
+			{
+				IndustryContentHoverable hoverable = hoverables[i];
+				if (hoverable == null)
+				{
+					continue;
+				}
+				if (serviceRoot != null && hoverable.transform.IsChildOf(serviceRoot.transform))
+				{
+					continue;
+				}
+				GameObject host = hoverable.gameObject;
+				UnityEngine.Object.Destroy(hoverable);
+				ServiceFacilityStoragePickable pickable = host.GetComponent<ServiceFacilityStoragePickable>() ?? host.AddComponent<ServiceFacilityStoragePickable>();
+				pickable.displayTitle = FirstNonEmpty(definition.requestTitle, load.description + " Stand");
+				pickable.sourceIndustry = definition.UsesInfiniteSupply ? null : industry;
+				pickable.load = load;
+				pickable.capacity = Mathf.Max(definition.facilityCapacity, 0f);
+				pickable.maxPickDistance = definition.maxPickDistance > 0f ? definition.maxPickDistance : 50f;
+				if (definition.debugLogging)
+				{
+					Main.Log("[ServiceFacility] retargeted stand tooltip on " + TransformPath(host.transform) + " to load=" + load.id);
+				}
+			}
+
+			// The spout raise/lower toggle keeps working as-is; only its baked-in title
+			// (e.g. "Diesel Fueling Stand") needs to follow the retargeted load.
+			string toggleTitle = FirstNonEmpty(definition.requestTitle, load.description + " Stand");
+			KeyValuePickableToggle[] toggles = target.GetComponentsInChildren<KeyValuePickableToggle>(true);
+			for (int i = 0; i < toggles.Length; i++)
+			{
+				KeyValuePickableToggle toggle = toggles[i];
+				if (toggle == null)
+				{
+					continue;
+				}
+				if (serviceRoot != null && toggle.transform.IsChildOf(serviceRoot.transform))
+				{
+					continue;
+				}
+				toggle.displayTitle = toggleTitle;
+			}
+		}
+
+		private static CarLoadTargetLoader FindExistingTargetLoader(GameObject target, GameObject serviceRoot)
+		{
+			if (target == null)
+			{
+				return null;
+			}
+			CarLoadTargetLoader[] loaders = target.GetComponentsInChildren<CarLoadTargetLoader>(true);
+			for (int i = 0; i < loaders.Length; i++)
+			{
+				CarLoadTargetLoader loader = loaders[i];
+				if (loader == null)
+				{
+					continue;
+				}
+				if (serviceRoot != null && loader.transform.IsChildOf(serviceRoot.transform))
+				{
+					continue;
+				}
+				return loader;
+			}
+			return null;
+		}
+
+		private static CarLoaderSequencer FindExistingTargetSequencer(CarLoadTargetLoader loader, GameObject target, GameObject serviceRoot)
+		{
+			if (loader != null)
+			{
+				CarLoaderSequencer nearLoader = loader.GetComponentInParent<CarLoaderSequencer>();
+				if (nearLoader == null)
+				{
+					nearLoader = loader.GetComponentInChildren<CarLoaderSequencer>(true);
+				}
+				if (nearLoader != null)
+				{
+					return nearLoader;
+				}
+			}
+			if (target == null)
+			{
+				return null;
+			}
+			CarLoaderSequencer[] sequencers = target.GetComponentsInChildren<CarLoaderSequencer>(true);
+			for (int i = 0; i < sequencers.Length; i++)
+			{
+				CarLoaderSequencer sequencer = sequencers[i];
+				if (sequencer == null)
+				{
+					continue;
+				}
+				if (serviceRoot != null && sequencer.transform.IsChildOf(serviceRoot.transform))
+				{
+					continue;
+				}
+				return sequencer;
+			}
+			return null;
 		}
 
 		private static void ConfigureToggle(GameObject serviceRoot, GameObject target, ServiceFacilityDefinition definition, KeyValueObject keyValue, string requestKey, Industry industry, Load load)
@@ -1852,6 +2031,8 @@ namespace Toolshed.ServiceFacilities
 		public string loadPointId;
 		public string[] loadPointIds;
 		public string serviceLoadId;
+		[Tooltip("Adopt the CarLoadTargetLoader already present on the target scenery (e.g. the vanilla diesel fueling stand) instead of creating a new one, and retarget it to serviceLoadId.")]
+		public bool useExistingTargetLoader;
 		public string sourceIndustryId;
 		public string[] sourceIndustryIds;
 		public string serviceTrackSpanId;

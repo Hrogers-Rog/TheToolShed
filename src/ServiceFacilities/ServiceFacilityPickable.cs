@@ -159,9 +159,14 @@ namespace Toolshed.ServiceFacilities
 
 		private string StorageText()
 		{
-			if (sourceIndustry == null || load == null)
+			if (load == null)
 			{
 				return "";
+			}
+			if (sourceIndustry == null)
+			{
+				// No backing industry means the loader dispenses an unlimited supply.
+				return "∞ " + load.description;
 			}
 
 			float quantity = sourceIndustry.Storage.QuantityInStorage(load, null);

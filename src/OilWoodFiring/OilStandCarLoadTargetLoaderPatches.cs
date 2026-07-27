@@ -8,12 +8,34 @@ using UnityEngine;
 
 namespace Toolshed.OilWoodFiring
 {
+	internal static class OilStandLoaderGate
+	{
+		/// <summary>
+		/// Oil-fired steam tenders need the fuel-slot matching in this file to be fueled.
+		/// The water standpipe earns it by being the registered dual-service loader; any
+		/// other loader (e.g. a diesel/bunker-c service stand) earns it by dispensing bunker-c.
+		/// </summary>
+		internal static bool ShouldServeBunkerC(CarLoadTargetLoader loader)
+		{
+			if (loader == null)
+			{
+				return false;
+			}
+			if (OilLoaderStandService.IsDualServiceLoader(loader))
+			{
+				return true;
+			}
+			return loader.load != null &&
+				string.Equals(loader.load.id, OilFuelConstants.BunkerCLoadId, StringComparison.OrdinalIgnoreCase);
+		}
+	}
+
 	[HarmonyPatch(typeof(CarLoadTargetLoader), "LoadSlotFromCar")]
 	internal static class OilStandCarLoadTargetLoaderLoadSlotFromCarPatch
 	{
 		private static void Postfix(CarLoadTargetLoader __instance, Car car, Vector3 point, ref int slotIndex, ref LoadSlot __result)
 		{
-			if (!Main.Enabled || __instance == null || car == null || !OilLoaderStandService.IsDualServiceLoader(__instance))
+			if (!Main.Enabled || __instance == null || car == null || !OilStandLoaderGate.ShouldServeBunkerC(__instance))
 			{
 				return;
 			}
@@ -79,7 +101,7 @@ namespace Toolshed.OilWoodFiring
 	{
 		private static bool Prefix(CarLoadTargetLoader __instance, Car car, LoadSlot loadSlot, int slotIndex, float dt)
 		{
-			if (!Main.Enabled || __instance == null || car == null || loadSlot == null || !OilLoaderStandService.IsDualServiceLoader(__instance))
+			if (!Main.Enabled || __instance == null || car == null || loadSlot == null || !OilStandLoaderGate.ShouldServeBunkerC(__instance))
 			{
 				return true;
 			}
