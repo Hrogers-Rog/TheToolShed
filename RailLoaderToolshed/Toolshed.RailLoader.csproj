@@ -2,7 +2,7 @@
   <PropertyGroup>
     <TargetFramework>net48</TargetFramework>
     <AssemblyName>Toolshed</AssemblyName>
-    <Version>0.3.0</Version>
+    <Version>0.3.1</Version>
     <RootNamespace>Toolshed</RootNamespace>
     <LangVersion>latest</LangVersion>
     <ImplicitUsings>disable</ImplicitUsings>
@@ -29,14 +29,14 @@
     <HarmonyAssemblyPath Condition="'$(HarmonyAssemblyPath)' == '' and Exists('$(UnityModManagerDir)\0Harmony.dll')">$(UnityModManagerDir)\0Harmony.dll</HarmonyAssemblyPath>
   </PropertyGroup>
 
-  <!-- RailLoader edition: every Toolshed module except the FUSE-authored turntable controller
-       and SelectiveInterchanges, which ships as the standalone "Toolshed Selective Interchanges"
-       mod (bundling both would double-apply route configs). -->
+  <!-- RailLoader edition: every Toolshed module except the FUSE-authored
+       turntable controller. -->
   <ItemGroup>
     <Compile Include="..\src\Main.cs" Link="src\Main.cs" />
     <Compile Include="..\src\Settings.cs" Link="src\Settings.cs" />
     <Compile Include="..\src\Couplers\*.cs" Link="src\Couplers\%(Filename)%(Extension)" />
     <Compile Include="..\src\OilWoodFiring\*.cs" Link="src\OilWoodFiring\%(Filename)%(Extension)" />
+    <Compile Include="..\src\SelectiveInterchanges\*.cs" Link="src\SelectiveInterchanges\%(Filename)%(Extension)" />
     <Compile Include="..\src\ServiceFacilities\*.cs" Link="src\ServiceFacilities\%(Filename)%(Extension)" />
   </ItemGroup>
 
@@ -107,6 +107,9 @@
     <None Include="Info.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="README.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Include="ToolshedServiceFacilities.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
@@ -131,6 +134,7 @@
     <MakeDir Directories="$(ModDeployDir)" />
     <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="Info.json" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="false" />
+    <Copy SourceFiles="README.md" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="false" />
     <Copy SourceFiles="ToolshedServiceFacilities.json" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="false" />
     <ItemGroup>
       <RailLoaderExampleFiles Include="..\Examples\**\*" />
