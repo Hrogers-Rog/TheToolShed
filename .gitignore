@@ -1,3 +1,5 @@
 bin/
 obj/
+__pycache__/
+*.py[cod]
 Local.Build.props
