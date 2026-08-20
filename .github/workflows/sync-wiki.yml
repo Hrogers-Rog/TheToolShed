@@ -1,0 +1,57 @@
+name: Sync Wiki
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "scripts/Sync-Wiki.ps1"
+      - ".github/workflows/sync-wiki.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: sync-wiki
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify the wiki has been initialized
+        shell: pwsh
+        env:
+          WIKI_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          $url = "https://x-access-token:$($env:WIKI_TOKEN)@github.com/$($env:REPO).wiki.git"
+          git ls-remote $url | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::The wiki repository is not initialized or could not be reached. Create and save its first page in GitHub, then re-run this workflow."
+            exit 1
+          }
+
+      - name: Configure git identity
+        shell: pwsh
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Sync docs to wiki
+        shell: pwsh
+        env:
+          WIKI_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          $url = "https://x-access-token:$($env:WIKI_TOKEN)@github.com/$($env:REPO).wiki.git"
+          ./scripts/Sync-Wiki.ps1 -WikiUrl $url -WorkDir "$($env:RUNNER_TEMP)/toolshed-wiki-sync"

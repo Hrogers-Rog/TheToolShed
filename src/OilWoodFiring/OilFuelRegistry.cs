@@ -15,6 +15,8 @@ namespace Toolshed.OilWoodFiring
 
 		private static bool _loggedRegistration;
 
+		private static CarPrototypeLibrary _registeredLibrary;
+
 		public static Load GetOrCreateBunkerCLoad()
 		{
 			if (_runtimeBunkerCLoad != null)
@@ -64,6 +66,10 @@ namespace Toolshed.OilWoodFiring
 
 		public static void EnsureRegistered(CarPrototypeLibrary library)
 		{
+			if (ReferenceEquals(library, _registeredLibrary))
+			{
+				return;
+			}
 			if (library == null)
 			{
 				return;
@@ -86,9 +92,11 @@ namespace Toolshed.OilWoodFiring
 			}.Where((Load load) => load != null && !source.Any((Load existing) => existing != null && string.Equals(existing.id, load.id, StringComparison.OrdinalIgnoreCase))).ToArray();
 			if (loadsToAdd.Length == 0)
 			{
+				_registeredLibrary = library;
 				return;
 			}
 			library.opsLoads = source.Concat(loadsToAdd).ToArray();
+			_registeredLibrary = library;
 			if (!_loggedRegistration)
 			{
 				_loggedRegistration = true;

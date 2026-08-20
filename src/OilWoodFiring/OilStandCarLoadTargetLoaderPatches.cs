@@ -113,7 +113,13 @@ namespace Toolshed.OilWoodFiring
 
 			CarLoadInfo? loadInfo = car.GetLoadInfo(slotIndex);
 			CarLoadInfo currentLoad = loadInfo ?? new CarLoadInfo(OilFuelConstants.BunkerCLoadId, 0f);
-			float addedQuantity = Mathf.Clamp(OilFuelConstants.BunkerCLoadingRateGallonsPerSecond / dt, 0f, loadSlot.MaximumCapacity - currentLoad.Quantity);
+			// Rate is expressed per real second. Dividing by frame delta made a
+			// nominal 60 gal/s stand transfer thousands of gallons every physics
+			// tick and could empty its source storage almost instantly.
+			float addedQuantity = Mathf.Clamp(
+				OilFuelConstants.BunkerCLoadingRateGallonsPerSecond * Mathf.Max(dt, 0f),
+				0f,
+				loadSlot.MaximumCapacity - currentLoad.Quantity);
 			if (__instance.sourceIndustry != null)
 			{
 				Model.Ops.Definition.Load bunkerCLoad = OilFuelRegistry.GetOrCreateBunkerCLoad();
