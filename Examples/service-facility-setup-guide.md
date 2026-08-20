@@ -237,6 +237,14 @@ For a dual-track loader with two chutes sharing one bin, use one JSON entry and 
 
 If `loadPointId` is omitted, Toolshed binds every `Toolshed Service Load Point` component found under that scenery object. Use explicit `loadPointId` only when one placed asset has load points you intentionally do not want active on that route.
 
+Older asset packs may already contain a correctly positioned outlet transform
+but no `Toolshed Service Load Point` component. When `loadPointId` names that
+transform, Toolshed creates the runtime binding on the existing object instead
+of spawning a second visual loader. It uses `serviceLoadId` when supplied; if
+that is blank, it can infer the load only when the configured source industry
+and delivery spans resolve to exactly one load. Ambiguous or missing loads are
+reported and left inert rather than guessed.
+
 ## Prefab Contract
 
 A community loader prefab only needs a small public contract:

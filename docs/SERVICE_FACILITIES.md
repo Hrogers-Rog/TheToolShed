@@ -63,6 +63,14 @@ That is an asset or route problem rather than a Toolshed one. Run `/fuse.assets`
 to confirm the pack mounted, and `/fuse.loaded` to confirm the route package
 applied.
 
+**The tank and working loader appear as two separate objects.**
+Do not place a second functional stand beside an already placed scenery model.
+For an older asset, set `targetObjectName` to the placed scenery id and
+`loadPointId` to the existing outlet transform (for example,
+`FuelLoaderFill`). Toolshed binds the service component to that transform. Set
+`serviceLoadId` explicitly when the source industry/span does not identify one
+unambiguously.
+
 ## Authoring
 
 Placing service facilities in your own route package is documented in depth in

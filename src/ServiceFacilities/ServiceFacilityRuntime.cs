@@ -307,32 +307,12 @@ namespace Toolshed.ServiceFacilities
 			}
 			else if (existing != null)
 			{
-				GameObject existingTarget = existing.transform.parent != null ? existing.transform.parent.gameObject : existing.gameObject;
-				Load resolvedLoad = ResolveLoad(definition.serviceLoadId);
-				bool resolvedUsesInfiniteSupply = definition.UsesInfiniteSupply;
-				Industry resolvedIndustry = resolvedUsesInfiniteSupply ? null : ResolveIndustry(definition);
-				TrackSpan[] resolvedSpans = ResolveTrackSpans(definition);
-				TrackSpan resolvedSpan = FirstTrackSpan(resolvedSpans);
-				if (resolvedLoad != null && (resolvedUsesInfiniteSupply || resolvedIndustry != null))
-				{
-					if (!PlaceServiceRoot(existing.gameObject, definition, resolvedSpan, existingTarget))
-					{
-						existing.gameObject.SetActive(false);
-						return;
-					}
-					if (!ConfigureRuntimeObject(existing.gameObject, existingTarget, id, definition, resolvedIndustry, resolvedSpan, resolvedSpans, resolvedLoad))
-					{
-						return;
-					}
-					if (!existing.gameObject.activeSelf)
-					{
-						existing.gameObject.SetActive(true);
-					}
-					existing.Configure();
-				}
-				EnsureAnimations(definition, existing.gameObject, existingTarget);
-				EnsureStorageAnimations(definition, existing.gameObject, existingTarget, existing.linkedIndustry, resolvedLoad);
-				EnsureParticleEffects(definition, existing.gameObject, existingTarget);
+				// The component owns its live loader/storage state after Configure(). Re-resolving
+				// every industry and span, replacing its KeyValue wiring, and rescanning every
+				// animation hierarchy on this two-second retry tick caused the periodic frame
+				// hitch reported on large FUSE maps. A map unload destroys the component and
+				// Unity's null semantics move the entry through the recovery branch above, so
+				// a healthy applied facility needs no polling refresh here.
 				return;
 			}
 
@@ -404,10 +384,14 @@ namespace Toolshed.ServiceFacilities
 			ServiceFacilityLoadPointAuthoring[] loadPoints = target.GetComponentsInChildren<ServiceFacilityLoadPointAuthoring>(true);
 			if (loadPoints == null || loadPoints.Length == 0)
 			{
+				loadPoints = CreateLegacyNamedLoadPointBindings(definition, target);
+			}
+			if (loadPoints == null || loadPoints.Length == 0)
+			{
 				if (definition.requireAuthoredLoadPoints)
 				{
 					WarnOnce(definition.EffectiveId + ":authored-load-points",
-						"target '" + definition.TargetDescription + "' has no Toolshed service load point components. Legacy JSON binding is disabled for this entry.");
+						"target '" + definition.TargetDescription + "' has no Toolshed service load point components or matching named load-point transforms. Legacy JSON binding is disabled for this entry.");
 					return true;
 				}
 				return false;
@@ -438,6 +422,131 @@ namespace Toolshed.ServiceFacilities
 			}
 
 			return true;
+		}
+
+		/// <summary>
+		/// Older loader asset packs predate Toolshed's definition components, but many
+		/// already expose a stable transform such as FuelLoaderFill. Bind that authored
+		/// transform at runtime so the functional loader stays attached to the visible
+		/// spout instead of requiring a second stand or a guessed world offset.
+		/// </summary>
+		private static ServiceFacilityLoadPointAuthoring[] CreateLegacyNamedLoadPointBindings(
+			ServiceFacilityDefinition definition,
+			GameObject target)
+		{
+			if (definition == null || target == null || !definition.HasLoadPointFilter)
+			{
+				return Array.Empty<ServiceFacilityLoadPointAuthoring>();
+			}
+
+			string inferredLoadId = InferServiceLoadId(definition);
+			if (string.IsNullOrWhiteSpace(inferredLoadId))
+			{
+				WarnOnce(
+					definition.EffectiveId + ":legacy-load-id",
+					"could not infer the service load for legacy load point '" +
+					definition.LoadPointDescription + "'. Set serviceLoadId explicitly or add a ToolshedServiceLoadPoint component.");
+				return Array.Empty<ServiceFacilityLoadPointAuthoring>();
+			}
+
+			List<ServiceFacilityLoadPointAuthoring> bindings = new List<ServiceFacilityLoadPointAuthoring>();
+			HashSet<Transform> seen = new HashSet<Transform>();
+			foreach (string candidate in CandidateStrings(definition.loadPointId, definition.loadPointIds))
+			{
+				Transform transform = FindChildByName(target.transform, candidate);
+				if (transform == null || !seen.Add(transform))
+				{
+					continue;
+				}
+
+				ServiceFacilityLoadPointAuthoring binding =
+					transform.GetComponent<ServiceFacilityLoadPointAuthoring>() ??
+					transform.gameObject.AddComponent<ServiceFacilityLoadPointAuthoring>();
+				binding.loadPointId = candidate;
+				binding.serviceLoadId = inferredLoadId;
+				binding.debugLogging = definition.debugLogging;
+				bindings.Add(binding);
+			}
+
+			if (bindings.Count > 0)
+			{
+				Main.Log(
+					"[ServiceFacility] bound " + bindings.Count + " legacy named load point(s) for " +
+					definition.EffectiveId + " to load=" + inferredLoadId + ".");
+			}
+			return bindings.ToArray();
+		}
+
+		private static string InferServiceLoadId(ServiceFacilityDefinition definition)
+		{
+			if (!string.IsNullOrWhiteSpace(definition.serviceLoadId))
+			{
+				return definition.serviceLoadId.Trim();
+			}
+
+			Industry industry = ResolveIndustry(definition);
+			if (industry == null)
+			{
+				return null;
+			}
+
+			HashSet<string> requestedSpanIds = new HashSet<string>(
+				CandidateStrings(definition.serviceTrackSpanId, definition.serviceTrackSpanIds),
+				StringComparer.OrdinalIgnoreCase);
+			HashSet<string> loadIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			IndustryComponent[] components = industry.GetComponentsInChildren<IndustryComponent>(true);
+			for (int i = 0; i < components.Length; i++)
+			{
+				IndustryComponent component = components[i];
+				if (component == null || !ComponentTouchesRequestedSpan(component, requestedSpanIds))
+				{
+					continue;
+				}
+
+				Load componentLoad = null;
+				if (component is IndustryLoaderBase loader)
+				{
+					componentLoad = loader.load;
+				}
+				else if (component is IndustryUnloader unloader)
+				{
+					componentLoad = unloader.load;
+				}
+				else if (component is InterchangedIndustryLoader interchanged)
+				{
+					componentLoad = interchanged.load;
+				}
+
+				if (componentLoad != null && !string.IsNullOrWhiteSpace(componentLoad.id))
+				{
+					loadIds.Add(componentLoad.id);
+				}
+			}
+
+			return loadIds.Count == 1 ? loadIds.First() : null;
+		}
+
+		private static bool ComponentTouchesRequestedSpan(
+			IndustryComponent component,
+			HashSet<string> requestedSpanIds)
+		{
+			if (requestedSpanIds == null || requestedSpanIds.Count == 0)
+			{
+				return true;
+			}
+			TrackSpan[] spans = component.trackSpans;
+			if (spans == null)
+			{
+				return false;
+			}
+			for (int i = 0; i < spans.Length; i++)
+			{
+				if (spans[i] != null && requestedSpanIds.Contains(spans[i].id))
+				{
+					return true;
+				}
+			}
+			return false;
 		}
 
 		private static bool AuthoredLoadPointAlreadyApplied(ServiceFacilityDefinition definition, ServiceFacilityLoadPointAuthoring loadPoint)
