@@ -48,7 +48,6 @@ namespace Toolshed.OilWoodFiring
 			{
 				return;
 			}
-			DestroyLegacyClones();
 			if (HasLiveConfiguredLoader())
 			{
 				return;
@@ -58,6 +57,7 @@ namespace Toolshed.OilWoodFiring
 				return;
 			}
 			_nextAttemptTime = Time.unscaledTime + RetryIntervalSeconds;
+			DestroyLegacyClones();
 			TrySpawnStandpipeClone();
 		}
 

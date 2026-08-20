@@ -38,9 +38,10 @@ namespace Toolshed.OilWoodFiring
 
         private static void RegisterCustomLoads()
         {
-            if (CarPrototypeLibrary.instance != null)
+            CarPrototypeLibrary library = CarPrototypeLibrary.instance;
+            if (library != null)
             {
-                OilFuelRegistry.EnsureRegistered(CarPrototypeLibrary.instance);
+                OilFuelRegistry.EnsureRegistered(library);
             }
         }
     }
