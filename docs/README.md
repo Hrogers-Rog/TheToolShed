@@ -46,6 +46,12 @@ that fuel. See [Oil & Wood Firing](OIL_WOOD_FIRING.md).
 **Where are the logs?**
 `%USERPROFILE%\AppData\LocalLow\Giraffe Lab LLC\Railroader\FUSE.log`
 
+**I see a regular two-second hitch.** Current Toolshed builds do not rescan
+healthy facilities or selective interchanges on a timer. Waiting definitions
+share one lazy lookup and back off up to 30 seconds; changing scenes resets the
+lookup immediately. Attach both `FUSE.log` and `Player.log` if a periodic hitch
+remains so its timestamp can be compared with FUSE's frame-spike phase report.
+
 ## Project
 
 - **Repository:** <https://github.com/Hrogers-Rog/TheToolShed>

@@ -133,6 +133,7 @@ namespace Toolshed.ServiceFacilities
 
 				_resolvedSampleRoot = null;
 				_clip = null;
+				_hasLastNormalized = false;
 			}
 
 			if (_fallbackTransform != null && !IsChildOf(_fallbackTransform, sampleRoot.transform))
@@ -196,6 +197,17 @@ namespace Toolshed.ServiceFacilities
 			{
 				normalized = 1f - normalized;
 			}
+			bool changed = !_hasLastNormalized
+				|| Mathf.Abs(_lastNormalized - normalized) >= 0.001f;
+			_hasLastNormalized = true;
+			_lastNormalized = normalized;
+			if (!changed)
+			{
+				// LateUpdate may call this to repair a streamed fallback transform.
+				// Do not resample the complete clip when inventory has not changed.
+				ApplyTransformFallback(normalized);
+				return;
+			}
 			LogStorageState(quantity, storageCapacity, normalized);
 			if (_clip != null)
 			{
@@ -210,12 +222,6 @@ namespace Toolshed.ServiceFacilities
 			{
 				return;
 			}
-			if (_hasLastNormalized && Mathf.Abs(_lastNormalized - normalized) < 0.01f)
-			{
-				return;
-			}
-			_hasLastNormalized = true;
-			_lastNormalized = normalized;
 			Main.Log("[ServiceFacility][Loader] storage animation state mapKey=" + animationMapKey +
 				", load=" + load.id +
 				", quantity=" + quantity.ToString("0.###") +
@@ -277,12 +283,23 @@ namespace Toolshed.ServiceFacilities
 			}
 
 			Vector3 position = target.localPosition;
-			position.y = Mathf.Lerp(emptyLocalY, fullLocalY, normalized);
-			target.localPosition = position;
+			float targetY = Mathf.Lerp(emptyLocalY, fullLocalY, normalized);
+			if (!Mathf.Approximately(position.y, targetY))
+			{
+				position.y = targetY;
+				target.localPosition = position;
+			}
 
 			Vector3 scale = target.localScale;
-			scale.z = Mathf.Lerp(emptyLocalScaleZ, fullLocalScaleZ, normalized);
-			target.localScale = scale;
+			float targetScaleZ = Mathf.Lerp(
+				emptyLocalScaleZ,
+				fullLocalScaleZ,
+				normalized);
+			if (!Mathf.Approximately(scale.z, targetScaleZ))
+			{
+				scale.z = targetScaleZ;
+				target.localScale = scale;
+			}
 		}
 
 		private Transform ResolveFallbackTransform()

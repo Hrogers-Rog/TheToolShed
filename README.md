@@ -27,6 +27,14 @@ loads after it.
 Toolshed ships its own asset packs (`SCAssetPacks`), which FUSE mounts
 automatically — there is nothing extra to install for the models.
 
+## Performance
+
+Toolshed performs scene discovery only while a configured facility or
+interchange is waiting to bind. Definitions share a lazy scene index, retries
+back off when no progress is possible, and a scene change resets the retry
+window immediately. Coupler and storage visuals are change-driven so unchanged
+renderer and transform state is not rewritten every frame.
+
 ## Documentation
 
 Full documentation is in **[docs/](docs/README.md)**.

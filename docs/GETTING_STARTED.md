@@ -1,5 +1,17 @@
 # Getting Started
 
+## Performance And Periodic Stutters
+
+Current Toolshed builds do not re-scan healthy service facilities or selective
+interchanges every two seconds. Only unresolved definitions retry; those retries
+share one lazy scene index and back off when no progress is possible. Scene
+changes reset discovery immediately. Coupler and facility animation helpers
+also avoid unchanged renderer, GameObject, and transform writes.
+
+If a regular hitch remains, enable FUSE frame-spike diagnostics and attach both
+`FUSE.log` and `Player.log`. The timestamp and named FUSE pump phase distinguish
+Toolshed discovery work from game or third-party work.
+
 ## Requirements
 
 - Railroader `2025.1.x`

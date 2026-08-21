@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using UnityModManagerNet;
 using HarmonyLib;
 using Toolshed.OilWoodFiring;
@@ -36,6 +37,7 @@ namespace Toolshed
             SelectiveInterchangeRuntime.Initialize();
 #endif
             ServiceFacilityRuntime.Initialize();
+            SceneManager.activeSceneChanged += OnActiveSceneChanged;
 #if RAILLOADER
             Log("Loaded RailLoader edition (selective interchanges ship separately).");
 #else
@@ -59,6 +61,15 @@ namespace Toolshed
             SelectiveInterchangeRuntime.Update();
 #endif
             ServiceFacilityRuntime.Update();
+        }
+
+        private static void OnActiveSceneChanged(Scene previous, Scene current)
+        {
+            OilWoodFiringRuntime.OnSceneChanged();
+#if !RAILLOADER
+            SelectiveInterchangeRuntime.OnSceneChanged();
+#endif
+            ServiceFacilityRuntime.OnSceneChanged();
         }
 
         private static void OnGUI(UnityModManager.ModEntry modEntry)
@@ -96,6 +107,7 @@ namespace Toolshed
 
         private static bool OnUnload(UnityModManager.ModEntry modEntry)
         {
+            SceneManager.activeSceneChanged -= OnActiveSceneChanged;
             OilWoodFiringRuntime.Unload();
 #if !RAILLOADER
             SelectiveInterchangeRuntime.Unload();

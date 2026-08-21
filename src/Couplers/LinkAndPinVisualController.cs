@@ -17,11 +17,24 @@ namespace Toolshed.Couplers
         private Car _car;
         private Car.End _end;
         private bool _partsResolved;
+        private bool _hasLastVisibility;
+        private bool _lastPocketVisible;
+        private bool _lastPinVisible;
+        private bool _lastLinkVisible;
+        private float _nextVisibilityRefreshAt;
+        private float _nextPartsResolveAt;
+        private float _partsResolveDelay = InitialPartsResolveDelaySeconds;
+
+        private const float VisibilityRefreshIntervalSeconds = 0.1f;
+        private const float InitialPartsResolveDelaySeconds = 0.25f;
+        private const float MaximumPartsResolveDelaySeconds = 8f;
 
         public void Configure(Car car, Car.End end)
         {
             _car = car;
             _end = end;
+            _nextPartsResolveAt = 0f;
+            _partsResolveDelay = InitialPartsResolveDelaySeconds;
             LinkAndPinEndRegistry.Register(car, end, this);
         }
 
@@ -31,18 +44,61 @@ namespace Toolshed.Couplers
 
             if (!_partsResolved)
             {
+                if (Time.unscaledTime < _nextPartsResolveAt)
+                    return;
                 ResolveParts();
+                if (!_partsResolved)
+                {
+                    _nextPartsResolveAt = Time.unscaledTime
+                        + _partsResolveDelay;
+                    _partsResolveDelay = Mathf.Min(
+                        MaximumPartsResolveDelaySeconds,
+                        _partsResolveDelay * 2f);
+                    return;
+                }
             }
 
+            if (!_partsResolved || Time.unscaledTime < _nextVisibilityRefreshAt)
+            {
+                return;
+            }
+
+            _nextVisibilityRefreshAt = Time.unscaledTime
+                + VisibilityRefreshIntervalSeconds;
+            ApplyVisibility(false);
+        }
+
+        internal void RefreshNow()
+        {
+            _nextVisibilityRefreshAt = 0f;
+            if (_partsResolved)
+                ApplyVisibility(false);
+        }
+
+        private void ApplyVisibility(bool force)
+        {
             bool pocketVisible = LinkAndPinCustomization.ShowPocket(_car, _end);
-            SetRenderers(_pocketRenderers, pocketVisible);
-            SetObjects(_pocketObjects, pocketVisible);
             bool pinVisible = LinkAndPinCustomization.ShowPin(_car, _end);
-            SetRenderers(_pinRenderers, pinVisible);
-            SetObjects(_pinObjects, pinVisible);
             bool linkVisible = ShouldShowLink();
-            SetRenderers(_linkRenderers, linkVisible);
-            SetObjects(_linkObjects, linkVisible);
+            if (force || !_hasLastVisibility || pocketVisible != _lastPocketVisible)
+            {
+                SetRenderers(_pocketRenderers, pocketVisible);
+                SetObjects(_pocketObjects, pocketVisible);
+                _lastPocketVisible = pocketVisible;
+            }
+            if (force || !_hasLastVisibility || pinVisible != _lastPinVisible)
+            {
+                SetRenderers(_pinRenderers, pinVisible);
+                SetObjects(_pinObjects, pinVisible);
+                _lastPinVisible = pinVisible;
+            }
+            if (force || !_hasLastVisibility || linkVisible != _lastLinkVisible)
+            {
+                SetRenderers(_linkRenderers, linkVisible);
+                SetObjects(_linkObjects, linkVisible);
+                _lastLinkVisible = linkVisible;
+            }
+            _hasLastVisibility = true;
         }
 
         private void ResolveParts()
@@ -76,16 +132,14 @@ namespace Toolshed.Couplers
             _partsResolved = _pocketObjects.Count > 0 || _pinObjects.Count > 0 || _linkObjects.Count > 0 || _pocketRenderers.Count > 0 || _pinRenderers.Count > 0 || _linkRenderers.Count > 0;
             if (_partsResolved)
             {
-                bool pocketVisible = LinkAndPinCustomization.ShowPocket(_car, _end);
-                SetRenderers(_pocketRenderers, pocketVisible);
-                SetObjects(_pocketObjects, pocketVisible);
-                bool pinVisible = LinkAndPinCustomization.ShowPin(_car, _end);
-                SetRenderers(_pinRenderers, pinVisible);
-                SetObjects(_pinObjects, pinVisible);
-                bool linkVisible = ShouldShowLink();
-                SetRenderers(_linkRenderers, linkVisible);
-                SetObjects(_linkObjects, linkVisible);
+                _partsResolveDelay = InitialPartsResolveDelaySeconds;
+                ApplyVisibility(true);
             }
+        }
+
+        private void OnDestroy()
+        {
+            LinkAndPinEndRegistry.Unregister(_car, _end, this);
         }
 
         private bool ShouldShowLink()
@@ -132,7 +186,8 @@ namespace Toolshed.Couplers
             {
                 if (renderer != null)
                 {
-                    renderer.enabled = enabled;
+                    if (renderer.enabled != enabled)
+                        renderer.enabled = enabled;
                 }
             }
         }

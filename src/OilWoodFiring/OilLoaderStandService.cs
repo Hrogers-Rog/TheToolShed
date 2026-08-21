@@ -17,6 +17,7 @@ namespace Toolshed.OilWoodFiring
 	internal static class OilLoaderStandService
 	{
 		private const float RetryIntervalSeconds = 2f;
+		private const float MaxRetryIntervalSeconds = 30f;
 
 		private const float CloneOffsetRight = 6.5f;
 
@@ -31,6 +32,7 @@ namespace Toolshed.OilWoodFiring
 		private static readonly FieldInfo AuthorizationRequirementField = AccessTools.Field(typeof(GlobalKeyValueObject), "authorizationRequirement");
 
 		private static float _nextAttemptTime;
+		private static float _retryIntervalSeconds = RetryIntervalSeconds;
 
 		private static GameObject _spawnedRoot;
 
@@ -56,9 +58,13 @@ namespace Toolshed.OilWoodFiring
 			{
 				return;
 			}
-			_nextAttemptTime = Time.unscaledTime + RetryIntervalSeconds;
-			DestroyLegacyClones();
-			TrySpawnStandpipeClone();
+			CarLoadTargetLoader[] loaders = UnityEngine.Object.FindObjectsOfType<CarLoadTargetLoader>();
+			DestroyLegacyClones(loaders);
+			TrySpawnStandpipeClone(loaders);
+			_retryIntervalSeconds = HasLiveConfiguredLoader()
+				? RetryIntervalSeconds
+				: Mathf.Min(MaxRetryIntervalSeconds, _retryIntervalSeconds * 2f);
+			_nextAttemptTime = Time.unscaledTime + _retryIntervalSeconds;
 		}
 
 		internal static void Restore()
@@ -68,6 +74,16 @@ namespace Toolshed.OilWoodFiring
 			_spawnedLoader = null;
 			_selectedLoaderGlobalId = null;
 			_nextAttemptTime = 0f;
+			_retryIntervalSeconds = RetryIntervalSeconds;
+		}
+
+		internal static void OnSceneChanged()
+		{
+			_spawnedRoot = null;
+			_spawnedLoader = null;
+			_selectedLoaderGlobalId = null;
+			_nextAttemptTime = 0f;
+			_retryIntervalSeconds = RetryIntervalSeconds;
 		}
 
 		private static bool HasLiveConfiguredLoader()
@@ -86,9 +102,8 @@ namespace Toolshed.OilWoodFiring
 			return true;
 		}
 
-		private static void TrySpawnStandpipeClone()
+		private static void TrySpawnStandpipeClone(CarLoadTargetLoader[] loaders)
 		{
-			CarLoadTargetLoader[] loaders = UnityEngine.Object.FindObjectsOfType<CarLoadTargetLoader>();
 			if (loaders == null || loaders.Length == 0)
 			{
 				LogNoCandidatesOnce("no car load target loaders are active in the scene yet.");
@@ -167,6 +182,11 @@ namespace Toolshed.OilWoodFiring
 		private static void DestroyLegacyClones()
 		{
 			CarLoadTargetLoader[] loaders = UnityEngine.Object.FindObjectsOfType<CarLoadTargetLoader>();
+			DestroyLegacyClones(loaders);
+		}
+
+		private static void DestroyLegacyClones(CarLoadTargetLoader[] loaders)
+		{
 			if (loaders == null || loaders.Length == 0)
 			{
 				return;
