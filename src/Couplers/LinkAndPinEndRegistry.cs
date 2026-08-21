@@ -30,6 +30,25 @@ namespace Toolshed.Couplers
             return false;
         }
 
+        public static void Refresh(Car car, Car.End end)
+        {
+            Car.EndGear gear = EndGearFor(car, end);
+            if (TryGet(gear, out Entry entry))
+                entry.Controller?.RefreshNow();
+        }
+
+        public static void Unregister(
+            Car car,
+            Car.End end,
+            LinkAndPinVisualController controller)
+        {
+            Car.EndGear gear = EndGearFor(car, end);
+            if (gear == null || !Entries.TryGetValue(gear, out Entry entry))
+                return;
+            if (ReferenceEquals(entry.Controller, controller))
+                Entries.Remove(gear);
+        }
+
         public static Car.EndGear EndGearFor(Car car, Car.End end)
         {
             if (car == null)

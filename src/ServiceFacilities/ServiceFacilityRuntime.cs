@@ -29,14 +29,17 @@ namespace Toolshed.ServiceFacilities
 		private const string ConfigFileName = "ToolshedServiceFacilities.json";
 		private const string LegacyConfigFileName = "toolshed-service-facilities.json";
 		private const float RetryIntervalSeconds = 2f;
+		private const float MaxRetryIntervalSeconds = 30f;
 
 		private static readonly List<ServiceFacilityDefinition> Definitions = new List<ServiceFacilityDefinition>();
 		private static readonly Dictionary<string, UniversalServiceFacilityComponent> Applied = new Dictionary<string, UniversalServiceFacilityComponent>(StringComparer.OrdinalIgnoreCase);
 		private static readonly HashSet<string> Warned = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		private static readonly HashSet<string> AnimationBound = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		private static float _nextRetryTime;
+		private static float _retryIntervalSeconds = RetryIntervalSeconds;
 		private static bool _loaded;
 		private static bool _loggedScanRoots;
+		private static ServiceFacilitySceneLookup _sceneLookup;
 
 		public static void Initialize()
 		{
@@ -44,6 +47,9 @@ namespace Toolshed.ServiceFacilities
 			Applied.Clear();
 			Warned.Clear();
 			AnimationBound.Clear();
+			_sceneLookup = null;
+			_nextRetryTime = 0f;
+			_retryIntervalSeconds = RetryIntervalSeconds;
 			_loggedScanRoots = false;
 			LoadDefinitions();
 			_loaded = true;
@@ -55,8 +61,20 @@ namespace Toolshed.ServiceFacilities
 			Applied.Clear();
 			Warned.Clear();
 			AnimationBound.Clear();
+			_sceneLookup = null;
+			_nextRetryTime = 0f;
+			_retryIntervalSeconds = RetryIntervalSeconds;
 			_loggedScanRoots = false;
 			_loaded = false;
+		}
+
+		public static void OnSceneChanged()
+		{
+			Applied.Clear();
+			AnimationBound.Clear();
+			_sceneLookup = null;
+			_nextRetryTime = 0f;
+			_retryIntervalSeconds = RetryIntervalSeconds;
 		}
 
 		public static void Update()
@@ -74,7 +92,6 @@ namespace Toolshed.ServiceFacilities
 				return;
 			}
 
-			_nextRetryTime = Time.unscaledTime + RetryIntervalSeconds;
 			if (Definitions.Count == 0)
 			{
 				// Configuration files cannot appear without changing the installed
@@ -83,10 +100,24 @@ namespace Toolshed.ServiceFacilities
 				return;
 			}
 
-			for (int i = 0; i < Definitions.Count; i++)
+			int appliedBefore = Applied.Count;
+			_sceneLookup = new ServiceFacilitySceneLookup();
+			try
 			{
-				ApplyOrRefresh(Definitions[i]);
+				for (int i = 0; i < Definitions.Count; i++)
+				{
+					ApplyOrRefresh(Definitions[i]);
+				}
 			}
+			finally
+			{
+				_sceneLookup = null;
+			}
+
+			_retryIntervalSeconds = Applied.Count > appliedBefore
+				? RetryIntervalSeconds
+				: Mathf.Min(MaxRetryIntervalSeconds, _retryIntervalSeconds * 2f);
+			_nextRetryTime = Time.unscaledTime + _retryIntervalSeconds;
 		}
 
 		private static void LoadDefinitions()
@@ -2024,8 +2055,9 @@ namespace Toolshed.ServiceFacilities
 					return direct;
 				}
 
-				Transform transform = UnityEngine.Object.FindObjectsOfType<Transform>(true)
-					.FirstOrDefault(item => string.Equals(item.name, targetName, StringComparison.OrdinalIgnoreCase));
+				Transform transform = _sceneLookup != null
+					? _sceneLookup.TransformNamed(targetName)
+					: FirstTransformNamed(targetName);
 				if (transform != null)
 				{
 					return transform.gameObject;
@@ -2034,8 +2066,12 @@ namespace Toolshed.ServiceFacilities
 
 			foreach (string modelIdentifier in CandidateStrings(definition.modelIdentifier, definition.modelIdentifiers))
 			{
-				SceneryAssetInstance instance = UnityEngine.Object.FindObjectsOfType<SceneryAssetInstance>(true)
-					.FirstOrDefault(item => string.Equals(item.identifier, modelIdentifier, StringComparison.OrdinalIgnoreCase));
+				SceneryAssetInstance instance = _sceneLookup != null
+					? _sceneLookup.SceneryWithIdentifier(modelIdentifier)
+					: UnityEngine.Object.FindObjectsByType<SceneryAssetInstance>(
+						FindObjectsInactive.Include,
+						FindObjectsSortMode.None)
+						.FirstOrDefault(item => string.Equals(item.identifier, modelIdentifier, StringComparison.OrdinalIgnoreCase));
 				if (instance != null)
 				{
 					return instance.gameObject;
@@ -2043,6 +2079,29 @@ namespace Toolshed.ServiceFacilities
 			}
 
 			return null;
+		}
+
+		private static Transform FirstTransformNamed(string targetName)
+		{
+			Transform winner = null;
+			Transform[] transforms = UnityEngine.Object.FindObjectsByType<Transform>(
+				FindObjectsInactive.Include,
+				FindObjectsSortMode.None);
+			for (int i = 0; i < transforms.Length; i++)
+			{
+				Transform candidate = transforms[i];
+				if (candidate == null ||
+					!string.Equals(candidate.name, targetName, StringComparison.OrdinalIgnoreCase))
+				{
+					continue;
+				}
+				if (winner == null || candidate.GetInstanceID() < winner.GetInstanceID())
+				{
+					winner = candidate;
+				}
+			}
+
+			return winner;
 		}
 
 		private static IEnumerable<string> CandidateStrings(string primary, string[] aliases)
@@ -2077,8 +2136,12 @@ namespace Toolshed.ServiceFacilities
 		{
 			foreach (string industryId in CandidateStrings(definition.sourceIndustryId, definition.sourceIndustryIds))
 			{
-				Industry industry = UnityEngine.Object.FindObjectsOfType<Industry>(true)
-					.FirstOrDefault(item => string.Equals(item.identifier, industryId, StringComparison.OrdinalIgnoreCase));
+				Industry industry = _sceneLookup != null
+					? _sceneLookup.IndustryWithIdentifier(industryId)
+					: UnityEngine.Object.FindObjectsByType<Industry>(
+						FindObjectsInactive.Include,
+						FindObjectsSortMode.None)
+						.FirstOrDefault(item => string.Equals(item.identifier, industryId, StringComparison.OrdinalIgnoreCase));
 				if (industry != null)
 				{
 					return industry;
@@ -2091,10 +2154,14 @@ namespace Toolshed.ServiceFacilities
 		private static TrackSpan[] ResolveTrackSpans(ServiceFacilityDefinition definition)
 		{
 			List<TrackSpan> spans = new List<TrackSpan>();
-			TrackSpan[] allSpans = UnityEngine.Object.FindObjectsOfType<TrackSpan>(true);
 			foreach (string spanId in CandidateStrings(definition.serviceTrackSpanId, definition.serviceTrackSpanIds))
 			{
-				TrackSpan span = allSpans.FirstOrDefault(item => string.Equals(item.id, spanId, StringComparison.OrdinalIgnoreCase));
+				TrackSpan span = _sceneLookup != null
+					? _sceneLookup.TrackSpanWithIdentifier(spanId)
+					: UnityEngine.Object.FindObjectsByType<TrackSpan>(
+						FindObjectsInactive.Include,
+						FindObjectsSortMode.None)
+						.FirstOrDefault(item => string.Equals(item.id, spanId, StringComparison.OrdinalIgnoreCase));
 				if (span != null && !spans.Contains(span))
 				{
 					spans.Add(span);
@@ -2107,6 +2174,106 @@ namespace Toolshed.ServiceFacilities
 		private static TrackSpan FirstTrackSpan(TrackSpan[] spans)
 		{
 			return spans != null && spans.Length > 0 ? spans[0] : null;
+		}
+
+		private sealed class ServiceFacilitySceneLookup
+		{
+			private Dictionary<string, Transform> _transforms;
+			private Dictionary<string, SceneryAssetInstance> _scenery;
+			private Dictionary<string, Industry> _industries;
+			private Dictionary<string, TrackSpan> _trackSpans;
+
+			internal Transform TransformNamed(string name)
+			{
+				if (_transforms == null)
+				{
+					_transforms = IndexTransforms(
+						UnityEngine.Object.FindObjectsByType<Transform>(
+							FindObjectsInactive.Include,
+							FindObjectsSortMode.None));
+				}
+				_transforms.TryGetValue(name ?? string.Empty, out Transform value);
+				return value;
+			}
+
+			internal SceneryAssetInstance SceneryWithIdentifier(string identifier)
+			{
+				if (_scenery == null)
+				{
+					_scenery = Index(
+						UnityEngine.Object.FindObjectsByType<SceneryAssetInstance>(
+							FindObjectsInactive.Include,
+							FindObjectsSortMode.None),
+						item => item != null ? item.identifier : null);
+				}
+				_scenery.TryGetValue(identifier ?? string.Empty, out SceneryAssetInstance value);
+				return value;
+			}
+
+			internal Industry IndustryWithIdentifier(string identifier)
+			{
+				if (_industries == null)
+				{
+					_industries = Index(
+						UnityEngine.Object.FindObjectsByType<Industry>(
+							FindObjectsInactive.Include,
+							FindObjectsSortMode.None),
+						item => item != null ? item.identifier : null);
+				}
+				_industries.TryGetValue(identifier ?? string.Empty, out Industry value);
+				return value;
+			}
+
+			internal TrackSpan TrackSpanWithIdentifier(string identifier)
+			{
+				if (_trackSpans == null)
+				{
+					_trackSpans = Index(
+						UnityEngine.Object.FindObjectsByType<TrackSpan>(
+							FindObjectsInactive.Include,
+							FindObjectsSortMode.None),
+						item => item != null ? item.id : null);
+				}
+				_trackSpans.TryGetValue(identifier ?? string.Empty, out TrackSpan value);
+				return value;
+			}
+
+			private static Dictionary<string, T> Index<T>(T[] values, Func<T, string> keySelector)
+			{
+				Dictionary<string, T> result = new Dictionary<string, T>(StringComparer.OrdinalIgnoreCase);
+				for (int i = 0; i < values.Length; i++)
+				{
+					T value = values[i];
+					string key = keySelector(value);
+					if (!string.IsNullOrWhiteSpace(key) && !result.ContainsKey(key))
+					{
+						result.Add(key, value);
+					}
+				}
+				return result;
+			}
+
+			private static Dictionary<string, Transform> IndexTransforms(Transform[] values)
+			{
+				Dictionary<string, Transform> result =
+					new Dictionary<string, Transform>(StringComparer.OrdinalIgnoreCase);
+				for (int i = 0; i < values.Length; i++)
+				{
+					Transform value = values[i];
+					string key = value != null ? value.name : null;
+					if (string.IsNullOrWhiteSpace(key))
+					{
+						continue;
+					}
+
+					if (!result.TryGetValue(key, out Transform current) ||
+						value.GetInstanceID() < current.GetInstanceID())
+					{
+						result[key] = value;
+					}
+				}
+				return result;
+			}
 		}
 
 		private static void WarnOnce(string key, string message)

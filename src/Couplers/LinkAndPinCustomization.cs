@@ -37,7 +37,7 @@ namespace Toolshed.Couplers
 
         public static void SetShowLooseLink(Car car, Car.End end, bool value)
         {
-            SetBool(car, LinkKey(end), value);
+            SetBool(car, LinkKey(end), end, value);
         }
 
         public static bool ShowPin(Car car, Car.End end)
@@ -47,7 +47,7 @@ namespace Toolshed.Couplers
 
         public static void SetShowPin(Car car, Car.End end, bool value)
         {
-            SetBool(car, PinKey(end), value);
+            SetBool(car, PinKey(end), end, value);
         }
 
         public static bool ShowPocket(Car car, Car.End end)
@@ -57,7 +57,7 @@ namespace Toolshed.Couplers
 
         public static void SetShowPocket(Car car, Car.End end, bool value)
         {
-            SetBool(car, PocketKey(end), value);
+            SetBool(car, PocketKey(end), end, value);
         }
 
         public static bool IsLinkAndPin(DetailModelComponent detail)
@@ -113,11 +113,16 @@ namespace Toolshed.Couplers
             return car.KeyValueObject[key].BoolValueOrDefault(defaultValue);
         }
 
-        private static void SetBool(Car car, string key, bool value)
+        private static void SetBool(
+            Car car,
+            string key,
+            Car.End end,
+            bool value)
         {
             if (car?.KeyValueObject != null)
             {
                 car.KeyValueObject[key] = Value.Bool(value);
+                LinkAndPinEndRegistry.Refresh(car, end);
             }
         }
     }

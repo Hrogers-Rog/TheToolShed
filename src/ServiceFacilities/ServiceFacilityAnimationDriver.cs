@@ -374,7 +374,14 @@ namespace Toolshed.ServiceFacilities
 			{
 				return;
 			}
-			_fallbackTransform.localRotation = Quaternion.Slerp(inactive, activeRotation, _fallbackProgress);
+			Quaternion target = Quaternion.Slerp(
+				inactive,
+				activeRotation,
+				_fallbackProgress);
+			if (Quaternion.Angle(_fallbackTransform.localRotation, target) > 0.01f)
+			{
+				_fallbackTransform.localRotation = target;
+			}
 		}
 
 		private Transform ResolveFallbackTransform()

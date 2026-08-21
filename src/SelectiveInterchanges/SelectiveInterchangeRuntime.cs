@@ -22,16 +22,23 @@ namespace Toolshed.SelectiveInterchanges
 	{
 		private const string ConfigFileName = "ToolshedSelectiveInterchanges.json";
 		private const float RetryIntervalSeconds = 2f;
+		private const float MaxRetryIntervalSeconds = 30f;
 
 		private static readonly List<SelectiveInterchangeDefinition> Definitions = new List<SelectiveInterchangeDefinition>();
 		private static readonly Dictionary<string, SelectiveInterchangeComponent> Applied = new Dictionary<string, SelectiveInterchangeComponent>(StringComparer.OrdinalIgnoreCase);
 		private static readonly HashSet<string> Warned = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		private static readonly MethodInfo OpsRebuildCollectionsMethod = AccessTools.Method(typeof(OpsController), "RebuildCollections");
 		private static readonly MethodInfo CarUpdateWaybillMethod = AccessTools.Method(typeof(Car), "UpdateWaybill");
+		private static readonly Queue<Car> PendingWaybillRepairs = new Queue<Car>();
+		private const int WaybillRepairsPerFrame = 2;
 
 		private static bool _loaded;
 		private static bool _loggedScanRoots;
 		private static float _nextRetryTime;
+		private static float _retryIntervalSeconds = RetryIntervalSeconds;
+		private static int _waybillRepairAppliedCount = -1;
+		private static int _restoredWaybillCount;
+		private static SelectiveInterchangeSceneLookup _sceneLookup;
 
 		public static void Initialize()
 		{
@@ -39,6 +46,12 @@ namespace Toolshed.SelectiveInterchanges
 			Applied.Clear();
 			Warned.Clear();
 			SelectiveInterchangeCarModelRegistry.Clear();
+			PendingWaybillRepairs.Clear();
+			_waybillRepairAppliedCount = -1;
+			_restoredWaybillCount = 0;
+			_sceneLookup = null;
+			_nextRetryTime = 0f;
+			_retryIntervalSeconds = RetryIntervalSeconds;
 			_loggedScanRoots = false;
 			LoadDefinitions();
 			_loaded = true;
@@ -50,8 +63,26 @@ namespace Toolshed.SelectiveInterchanges
 			Applied.Clear();
 			Warned.Clear();
 			SelectiveInterchangeCarModelRegistry.Clear();
+			PendingWaybillRepairs.Clear();
+			_waybillRepairAppliedCount = -1;
+			_restoredWaybillCount = 0;
+			_sceneLookup = null;
+			_nextRetryTime = 0f;
+			_retryIntervalSeconds = RetryIntervalSeconds;
 			_loggedScanRoots = false;
 			_loaded = false;
+		}
+
+		public static void OnSceneChanged()
+		{
+			Applied.Clear();
+			SelectiveInterchangeCarModelRegistry.Clear();
+			PendingWaybillRepairs.Clear();
+			_waybillRepairAppliedCount = -1;
+			_restoredWaybillCount = 0;
+			_sceneLookup = null;
+			_nextRetryTime = 0f;
+			_retryIntervalSeconds = RetryIntervalSeconds;
 		}
 
 		public static void Update()
@@ -64,12 +95,12 @@ namespace Toolshed.SelectiveInterchanges
 			{
 				Initialize();
 			}
+			DrainWaybillRepairs();
 			if (Time.unscaledTime < _nextRetryTime)
 			{
 				return;
 			}
 
-			_nextRetryTime = Time.unscaledTime + RetryIntervalSeconds;
 			if (Definitions.Count == 0)
 			{
 				// Mod configuration files are static for the lifetime of a
@@ -79,11 +110,27 @@ namespace Toolshed.SelectiveInterchanges
 				return;
 			}
 
-			for (int i = 0; i < Definitions.Count; i++)
+			int appliedBefore = Applied.Count;
+			_sceneLookup = new SelectiveInterchangeSceneLookup();
+			try
 			{
-				ApplyOrRefresh(Definitions[i]);
+				for (int i = 0; i < Definitions.Count; i++)
+				{
+					ApplyOrRefresh(Definitions[i]);
+				}
 			}
-			RepairCarWaybillCaches();
+			finally
+			{
+				_sceneLookup = null;
+			}
+			if (Applied.Count != _waybillRepairAppliedCount)
+			{
+				ScheduleWaybillRepairs();
+			}
+			_retryIntervalSeconds = Applied.Count > appliedBefore
+				? RetryIntervalSeconds
+				: Mathf.Min(MaxRetryIntervalSeconds, _retryIntervalSeconds * 2f);
+			_nextRetryTime = Time.unscaledTime + _retryIntervalSeconds;
 		}
 
 		/// <summary>
@@ -93,8 +140,10 @@ namespace Toolshed.SelectiveInterchanges
 		/// definitions. Re-parse those caches once our identifiers resolve so arrival payments
 		/// and waybill tags survive a reload.
 		/// </summary>
-		private static void RepairCarWaybillCaches()
+		private static void ScheduleWaybillRepairs()
 		{
+			PendingWaybillRepairs.Clear();
+			_restoredWaybillCount = 0;
 			if (CarUpdateWaybillMethod == null || Applied.Count == 0)
 			{
 				return;
@@ -105,9 +154,40 @@ namespace Toolshed.SelectiveInterchanges
 			{
 				return;
 			}
+			_waybillRepairAppliedCount = Applied.Count;
 
 			foreach (Car car in trainController.Cars)
 			{
+				if (car == null || car.Waybill != null || car.KeyValueObject == null)
+				{
+					continue;
+				}
+				KeyValue.Runtime.Value raw = car.KeyValueObject[Car.KeyOpsWaybill];
+				if (raw.Type != KeyValue.Runtime.ValueType.Dictionary)
+				{
+					continue;
+				}
+				PendingWaybillRepairs.Enqueue(car);
+			}
+		}
+
+		private static void DrainWaybillRepairs()
+		{
+			if (PendingWaybillRepairs.Count == 0 || CarUpdateWaybillMethod == null)
+			{
+				return;
+			}
+			OpsController opsController = OpsController.Shared;
+			if (opsController == null)
+			{
+				return;
+			}
+
+			int processed = 0;
+			while (processed < WaybillRepairsPerFrame && PendingWaybillRepairs.Count > 0)
+			{
+				processed++;
+				Car car = PendingWaybillRepairs.Dequeue();
 				if (car == null || car.Waybill != null || car.KeyValueObject == null)
 				{
 					continue;
@@ -126,18 +206,24 @@ namespace Toolshed.SelectiveInterchanges
 				}
 				catch (Exception)
 				{
-					// Destination or origin still unresolvable; retry on a later pass.
+					// Another definition is still unresolved. A later increase in Applied
+					// schedules a fresh bounded pass without polling this car forever.
 					continue;
 				}
 				try
 				{
 					CarUpdateWaybillMethod.Invoke(car, new object[] { raw });
-					Main.Log("[SelectiveInterchange] restored cached waybill for " + car.DisplayName + ".");
+					_restoredWaybillCount++;
 				}
 				catch (Exception ex)
 				{
 					Main.Warn("[SelectiveInterchange] could not restore waybill cache for " + car.DisplayName + ": " + ex.Message);
 				}
+			}
+			if (PendingWaybillRepairs.Count == 0 && _restoredWaybillCount > 0)
+			{
+				Main.Log("[SelectiveInterchange] restored " + _restoredWaybillCount +
+					" cached waybill(s) through a bounded repair queue.");
 			}
 		}
 
@@ -200,8 +286,12 @@ namespace Toolshed.SelectiveInterchanges
 			{
 				return null;
 			}
-			return UnityEngine.Object.FindObjectsOfType<Industry>(true)
-				.FirstOrDefault(item => item != null && string.Equals(item.identifier, industryId, StringComparison.OrdinalIgnoreCase));
+			return _sceneLookup != null
+				? _sceneLookup.IndustryWithIdentifier(industryId)
+				: UnityEngine.Object.FindObjectsByType<Industry>(
+					FindObjectsInactive.Include,
+					FindObjectsSortMode.None)
+					.FirstOrDefault(item => item != null && string.Equals(item.identifier, industryId, StringComparison.OrdinalIgnoreCase));
 		}
 
 		internal static Interchange ResolveInterchange(string componentIdentifier)
@@ -210,8 +300,12 @@ namespace Toolshed.SelectiveInterchanges
 			{
 				return null;
 			}
-			return UnityEngine.Object.FindObjectsOfType<Interchange>(true)
-				.FirstOrDefault(item => item != null && string.Equals(item.Identifier, componentIdentifier, StringComparison.OrdinalIgnoreCase));
+			return _sceneLookup != null
+				? _sceneLookup.InterchangeWithIdentifier(componentIdentifier)
+				: UnityEngine.Object.FindObjectsByType<Interchange>(
+					FindObjectsInactive.Include,
+					FindObjectsSortMode.None)
+					.FirstOrDefault(item => item != null && string.Equals(item.Identifier, componentIdentifier, StringComparison.OrdinalIgnoreCase));
 		}
 
 		internal static bool ShouldExcludeFromGenericInterchangeSelection(Interchange interchange)
@@ -238,8 +332,12 @@ namespace Toolshed.SelectiveInterchanges
 			{
 				return null;
 			}
-			return UnityEngine.Object.FindObjectsOfType<IndustryComponent>(true)
-				.FirstOrDefault(item => item != null && string.Equals(item.Identifier, componentIdentifier, StringComparison.OrdinalIgnoreCase));
+			return _sceneLookup != null
+				? _sceneLookup.ComponentWithIdentifier(componentIdentifier)
+				: UnityEngine.Object.FindObjectsByType<IndustryComponent>(
+					FindObjectsInactive.Include,
+					FindObjectsSortMode.None)
+					.FirstOrDefault(item => item != null && string.Equals(item.Identifier, componentIdentifier, StringComparison.OrdinalIgnoreCase));
 		}
 
 		internal static TrackSpan[] ResolveTrackSpans(string[] spanIds)
@@ -250,7 +348,6 @@ namespace Toolshed.SelectiveInterchanges
 			}
 
 			List<TrackSpan> spans = new List<TrackSpan>();
-			TrackSpan[] allSpans = UnityEngine.Object.FindObjectsOfType<TrackSpan>(true);
 			for (int i = 0; i < spanIds.Length; i++)
 			{
 				string spanId = spanIds[i];
@@ -258,7 +355,12 @@ namespace Toolshed.SelectiveInterchanges
 				{
 					continue;
 				}
-				TrackSpan span = allSpans.FirstOrDefault(item => item != null && string.Equals(item.id, spanId, StringComparison.OrdinalIgnoreCase));
+				TrackSpan span = _sceneLookup != null
+					? _sceneLookup.TrackSpanWithIdentifier(spanId)
+					: UnityEngine.Object.FindObjectsByType<TrackSpan>(
+						FindObjectsInactive.Include,
+						FindObjectsSortMode.None)
+						.FirstOrDefault(item => item != null && string.Equals(item.id, spanId, StringComparison.OrdinalIgnoreCase));
 				if (span != null)
 				{
 					spans.Add(span);
@@ -461,6 +563,19 @@ namespace Toolshed.SelectiveInterchanges
 				return;
 			}
 
+			SelectiveInterchangeComponent component;
+			if (Applied.TryGetValue(id, out component) && component == null)
+			{
+				Applied.Remove(id);
+			}
+			else if (component != null)
+			{
+				// A healthy component owns its live state after Configure(). Re-resolving
+				// every industry and TrackSpan on the retry tick caused a periodic hitch.
+				// Unity's destroyed-object null semantics still recover after map reload.
+				return;
+			}
+
 			Industry industry = ResolveDefinitionIndustry(definition);
 			if (industry == null)
 			{
@@ -473,12 +588,6 @@ namespace Toolshed.SelectiveInterchanges
 			{
 				WarnOnce(id + ":interchange", "waiting for Interchange component under industry '" + industry.identifier + "'.");
 				return;
-			}
-
-			SelectiveInterchangeComponent component;
-			if (Applied.TryGetValue(id, out component) && component == null)
-			{
-				Applied.Remove(id);
 			}
 
 			bool dirty = false;
@@ -564,6 +673,85 @@ namespace Toolshed.SelectiveInterchanges
 			catch (Exception ex)
 			{
 				Main.Warn("[SelectiveInterchange] could not rebuild ops collections: " + ex.Message);
+			}
+		}
+
+		private sealed class SelectiveInterchangeSceneLookup
+		{
+			private Dictionary<string, Industry> _industries;
+			private Dictionary<string, Interchange> _interchanges;
+			private Dictionary<string, IndustryComponent> _components;
+			private Dictionary<string, TrackSpan> _trackSpans;
+
+			internal Industry IndustryWithIdentifier(string identifier)
+			{
+				if (_industries == null)
+				{
+					_industries = Index(
+						UnityEngine.Object.FindObjectsByType<Industry>(
+							FindObjectsInactive.Include,
+							FindObjectsSortMode.None),
+						item => item != null ? item.identifier : null);
+				}
+				_industries.TryGetValue(identifier ?? string.Empty, out Industry value);
+				return value;
+			}
+
+			internal Interchange InterchangeWithIdentifier(string identifier)
+			{
+				if (_interchanges == null)
+				{
+					_interchanges = Index(
+						UnityEngine.Object.FindObjectsByType<Interchange>(
+							FindObjectsInactive.Include,
+							FindObjectsSortMode.None),
+						item => item != null ? item.Identifier : null);
+				}
+				_interchanges.TryGetValue(identifier ?? string.Empty, out Interchange value);
+				return value;
+			}
+
+			internal IndustryComponent ComponentWithIdentifier(string identifier)
+			{
+				if (_components == null)
+				{
+					_components = Index(
+						UnityEngine.Object.FindObjectsByType<IndustryComponent>(
+							FindObjectsInactive.Include,
+							FindObjectsSortMode.None),
+						item => item != null ? item.Identifier : null);
+				}
+				_components.TryGetValue(identifier ?? string.Empty, out IndustryComponent value);
+				return value;
+			}
+
+			internal TrackSpan TrackSpanWithIdentifier(string identifier)
+			{
+				if (_trackSpans == null)
+				{
+					_trackSpans = Index(
+						UnityEngine.Object.FindObjectsByType<TrackSpan>(
+							FindObjectsInactive.Include,
+							FindObjectsSortMode.None),
+						item => item != null ? item.id : null);
+				}
+				_trackSpans.TryGetValue(identifier ?? string.Empty, out TrackSpan value);
+				return value;
+			}
+
+			private static Dictionary<string, T> Index<T>(T[] values, Func<T, string> keySelector)
+			{
+				Dictionary<string, T> result = new Dictionary<string, T>(StringComparer.OrdinalIgnoreCase);
+				for (int i = 0; i < values.Length; i++)
+				{
+					T value = values[i];
+					string key = keySelector(value);
+					if (!string.IsNullOrWhiteSpace(key) && !result.ContainsKey(key))
+					{
+						result.Add(key, value);
+					}
+				}
+				return result;
 			}
 		}
 

@@ -31,6 +31,11 @@ namespace Toolshed.OilWoodFiring
             OilLoaderStandService.Update();
         }
 
+        public static void OnSceneChanged()
+        {
+            OilLoaderStandService.OnSceneChanged();
+        }
+
         public static void Unload()
         {
             OilLoaderStandService.Restore();
