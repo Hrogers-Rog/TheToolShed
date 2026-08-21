@@ -2057,8 +2057,7 @@ namespace Toolshed.ServiceFacilities
 
 				Transform transform = _sceneLookup != null
 					? _sceneLookup.TransformNamed(targetName)
-					: UnityEngine.Object.FindObjectsOfType<Transform>(true)
-						.FirstOrDefault(item => string.Equals(item.name, targetName, StringComparison.OrdinalIgnoreCase));
+					: FirstTransformNamed(targetName);
 				if (transform != null)
 				{
 					return transform.gameObject;
@@ -2080,6 +2079,29 @@ namespace Toolshed.ServiceFacilities
 			}
 
 			return null;
+		}
+
+		private static Transform FirstTransformNamed(string targetName)
+		{
+			Transform winner = null;
+			Transform[] transforms = UnityEngine.Object.FindObjectsByType<Transform>(
+				FindObjectsInactive.Include,
+				FindObjectsSortMode.None);
+			for (int i = 0; i < transforms.Length; i++)
+			{
+				Transform candidate = transforms[i];
+				if (candidate == null ||
+					!string.Equals(candidate.name, targetName, StringComparison.OrdinalIgnoreCase))
+				{
+					continue;
+				}
+				if (winner == null || candidate.GetInstanceID() < winner.GetInstanceID())
+				{
+					winner = candidate;
+				}
+			}
+
+			return winner;
 		}
 
 		private static IEnumerable<string> CandidateStrings(string primary, string[] aliases)
@@ -2165,9 +2187,10 @@ namespace Toolshed.ServiceFacilities
 			{
 				if (_transforms == null)
 				{
-					_transforms = Index(
-						UnityEngine.Object.FindObjectsOfType<Transform>(true),
-						item => item != null ? item.name : null);
+					_transforms = IndexTransforms(
+						UnityEngine.Object.FindObjectsByType<Transform>(
+							FindObjectsInactive.Include,
+							FindObjectsSortMode.None));
 				}
 				_transforms.TryGetValue(name ?? string.Empty, out Transform value);
 				return value;
@@ -2225,6 +2248,28 @@ namespace Toolshed.ServiceFacilities
 					if (!string.IsNullOrWhiteSpace(key) && !result.ContainsKey(key))
 					{
 						result.Add(key, value);
+					}
+				}
+				return result;
+			}
+
+			private static Dictionary<string, Transform> IndexTransforms(Transform[] values)
+			{
+				Dictionary<string, Transform> result =
+					new Dictionary<string, Transform>(StringComparer.OrdinalIgnoreCase);
+				for (int i = 0; i < values.Length; i++)
+				{
+					Transform value = values[i];
+					string key = value != null ? value.name : null;
+					if (string.IsNullOrWhiteSpace(key))
+					{
+						continue;
+					}
+
+					if (!result.TryGetValue(key, out Transform current) ||
+						value.GetInstanceID() < current.GetInstanceID())
+					{
+						result[key] = value;
 					}
 				}
 				return result;
