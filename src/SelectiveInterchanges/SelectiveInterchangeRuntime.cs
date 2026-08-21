@@ -288,7 +288,9 @@ namespace Toolshed.SelectiveInterchanges
 			}
 			return _sceneLookup != null
 				? _sceneLookup.IndustryWithIdentifier(industryId)
-				: UnityEngine.Object.FindObjectsOfType<Industry>(true)
+				: UnityEngine.Object.FindObjectsByType<Industry>(
+					FindObjectsInactive.Include,
+					FindObjectsSortMode.None)
 					.FirstOrDefault(item => item != null && string.Equals(item.identifier, industryId, StringComparison.OrdinalIgnoreCase));
 		}
 
@@ -300,7 +302,9 @@ namespace Toolshed.SelectiveInterchanges
 			}
 			return _sceneLookup != null
 				? _sceneLookup.InterchangeWithIdentifier(componentIdentifier)
-				: UnityEngine.Object.FindObjectsOfType<Interchange>(true)
+				: UnityEngine.Object.FindObjectsByType<Interchange>(
+					FindObjectsInactive.Include,
+					FindObjectsSortMode.None)
 					.FirstOrDefault(item => item != null && string.Equals(item.Identifier, componentIdentifier, StringComparison.OrdinalIgnoreCase));
 		}
 
@@ -330,7 +334,9 @@ namespace Toolshed.SelectiveInterchanges
 			}
 			return _sceneLookup != null
 				? _sceneLookup.ComponentWithIdentifier(componentIdentifier)
-				: UnityEngine.Object.FindObjectsOfType<IndustryComponent>(true)
+				: UnityEngine.Object.FindObjectsByType<IndustryComponent>(
+					FindObjectsInactive.Include,
+					FindObjectsSortMode.None)
 					.FirstOrDefault(item => item != null && string.Equals(item.Identifier, componentIdentifier, StringComparison.OrdinalIgnoreCase));
 		}
 
@@ -351,7 +357,9 @@ namespace Toolshed.SelectiveInterchanges
 				}
 				TrackSpan span = _sceneLookup != null
 					? _sceneLookup.TrackSpanWithIdentifier(spanId)
-					: UnityEngine.Object.FindObjectsOfType<TrackSpan>(true)
+					: UnityEngine.Object.FindObjectsByType<TrackSpan>(
+						FindObjectsInactive.Include,
+						FindObjectsSortMode.None)
 						.FirstOrDefault(item => item != null && string.Equals(item.id, spanId, StringComparison.OrdinalIgnoreCase));
 				if (span != null)
 				{
@@ -680,7 +688,9 @@ namespace Toolshed.SelectiveInterchanges
 				if (_industries == null)
 				{
 					_industries = Index(
-						UnityEngine.Object.FindObjectsOfType<Industry>(true),
+						UnityEngine.Object.FindObjectsByType<Industry>(
+							FindObjectsInactive.Include,
+							FindObjectsSortMode.None),
 						item => item != null ? item.identifier : null);
 				}
 				_industries.TryGetValue(identifier ?? string.Empty, out Industry value);
@@ -692,7 +702,9 @@ namespace Toolshed.SelectiveInterchanges
 				if (_interchanges == null)
 				{
 					_interchanges = Index(
-						UnityEngine.Object.FindObjectsOfType<Interchange>(true),
+						UnityEngine.Object.FindObjectsByType<Interchange>(
+							FindObjectsInactive.Include,
+							FindObjectsSortMode.None),
 						item => item != null ? item.Identifier : null);
 				}
 				_interchanges.TryGetValue(identifier ?? string.Empty, out Interchange value);
@@ -704,7 +716,9 @@ namespace Toolshed.SelectiveInterchanges
 				if (_components == null)
 				{
 					_components = Index(
-						UnityEngine.Object.FindObjectsOfType<IndustryComponent>(true),
+						UnityEngine.Object.FindObjectsByType<IndustryComponent>(
+							FindObjectsInactive.Include,
+							FindObjectsSortMode.None),
 						item => item != null ? item.Identifier : null);
 				}
 				_components.TryGetValue(identifier ?? string.Empty, out IndustryComponent value);
@@ -716,7 +730,9 @@ namespace Toolshed.SelectiveInterchanges
 				if (_trackSpans == null)
 				{
 					_trackSpans = Index(
-						UnityEngine.Object.FindObjectsOfType<TrackSpan>(true),
+						UnityEngine.Object.FindObjectsByType<TrackSpan>(
+							FindObjectsInactive.Include,
+							FindObjectsSortMode.None),
 						item => item != null ? item.id : null);
 				}
 				_trackSpans.TryGetValue(identifier ?? string.Empty, out TrackSpan value);

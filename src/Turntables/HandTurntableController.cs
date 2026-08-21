@@ -1257,7 +1257,9 @@ namespace Toolshed.Turntables
                 return;
             }
 
-            var behaviours = FindObjectsOfType(type);
+            var behaviours = FindObjectsByType(
+                type,
+                FindObjectsSortMode.None);
             for (var i = 0; i < behaviours.Length; i++)
             {
                 var behaviour = behaviours[i] as Behaviour;
@@ -1285,7 +1287,9 @@ namespace Toolshed.Turntables
                 return;
             }
 
-            var inputs = FindObjectsOfType(type);
+            var inputs = FindObjectsByType(
+                type,
+                FindObjectsSortMode.None);
             for (var i = 0; i < inputs.Length; i++)
             {
                 method.Invoke(inputs[i], new object[] { false });

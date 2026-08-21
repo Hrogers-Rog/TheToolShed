@@ -58,7 +58,8 @@ namespace Toolshed.OilWoodFiring
 			{
 				return;
 			}
-			CarLoadTargetLoader[] loaders = UnityEngine.Object.FindObjectsOfType<CarLoadTargetLoader>();
+			CarLoadTargetLoader[] loaders = UnityEngine.Object.FindObjectsByType<CarLoadTargetLoader>(
+				FindObjectsSortMode.None);
 			DestroyLegacyClones(loaders);
 			TrySpawnStandpipeClone(loaders);
 			_retryIntervalSeconds = HasLiveConfiguredLoader()
@@ -181,7 +182,8 @@ namespace Toolshed.OilWoodFiring
 
 		private static void DestroyLegacyClones()
 		{
-			CarLoadTargetLoader[] loaders = UnityEngine.Object.FindObjectsOfType<CarLoadTargetLoader>();
+			CarLoadTargetLoader[] loaders = UnityEngine.Object.FindObjectsByType<CarLoadTargetLoader>(
+				FindObjectsSortMode.None);
 			DestroyLegacyClones(loaders);
 		}
 

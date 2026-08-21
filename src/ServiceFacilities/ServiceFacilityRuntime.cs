@@ -2069,7 +2069,9 @@ namespace Toolshed.ServiceFacilities
 			{
 				SceneryAssetInstance instance = _sceneLookup != null
 					? _sceneLookup.SceneryWithIdentifier(modelIdentifier)
-					: UnityEngine.Object.FindObjectsOfType<SceneryAssetInstance>(true)
+					: UnityEngine.Object.FindObjectsByType<SceneryAssetInstance>(
+						FindObjectsInactive.Include,
+						FindObjectsSortMode.None)
 						.FirstOrDefault(item => string.Equals(item.identifier, modelIdentifier, StringComparison.OrdinalIgnoreCase));
 				if (instance != null)
 				{
@@ -2114,7 +2116,9 @@ namespace Toolshed.ServiceFacilities
 			{
 				Industry industry = _sceneLookup != null
 					? _sceneLookup.IndustryWithIdentifier(industryId)
-					: UnityEngine.Object.FindObjectsOfType<Industry>(true)
+					: UnityEngine.Object.FindObjectsByType<Industry>(
+						FindObjectsInactive.Include,
+						FindObjectsSortMode.None)
 						.FirstOrDefault(item => string.Equals(item.identifier, industryId, StringComparison.OrdinalIgnoreCase));
 				if (industry != null)
 				{
@@ -2132,7 +2136,9 @@ namespace Toolshed.ServiceFacilities
 			{
 				TrackSpan span = _sceneLookup != null
 					? _sceneLookup.TrackSpanWithIdentifier(spanId)
-					: UnityEngine.Object.FindObjectsOfType<TrackSpan>(true)
+					: UnityEngine.Object.FindObjectsByType<TrackSpan>(
+						FindObjectsInactive.Include,
+						FindObjectsSortMode.None)
 						.FirstOrDefault(item => string.Equals(item.id, spanId, StringComparison.OrdinalIgnoreCase));
 				if (span != null && !spans.Contains(span))
 				{
@@ -2172,7 +2178,9 @@ namespace Toolshed.ServiceFacilities
 				if (_scenery == null)
 				{
 					_scenery = Index(
-						UnityEngine.Object.FindObjectsOfType<SceneryAssetInstance>(true),
+						UnityEngine.Object.FindObjectsByType<SceneryAssetInstance>(
+							FindObjectsInactive.Include,
+							FindObjectsSortMode.None),
 						item => item != null ? item.identifier : null);
 				}
 				_scenery.TryGetValue(identifier ?? string.Empty, out SceneryAssetInstance value);
@@ -2184,7 +2192,9 @@ namespace Toolshed.ServiceFacilities
 				if (_industries == null)
 				{
 					_industries = Index(
-						UnityEngine.Object.FindObjectsOfType<Industry>(true),
+						UnityEngine.Object.FindObjectsByType<Industry>(
+							FindObjectsInactive.Include,
+							FindObjectsSortMode.None),
 						item => item != null ? item.identifier : null);
 				}
 				_industries.TryGetValue(identifier ?? string.Empty, out Industry value);
@@ -2196,7 +2206,9 @@ namespace Toolshed.ServiceFacilities
 				if (_trackSpans == null)
 				{
 					_trackSpans = Index(
-						UnityEngine.Object.FindObjectsOfType<TrackSpan>(true),
+						UnityEngine.Object.FindObjectsByType<TrackSpan>(
+							FindObjectsInactive.Include,
+							FindObjectsSortMode.None),
 						item => item != null ? item.id : null);
 				}
 				_trackSpans.TryGetValue(identifier ?? string.Empty, out TrackSpan value);
